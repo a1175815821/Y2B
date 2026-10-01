@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Y2B",
+  "version": "0.1.0",
+  "identifier": "com.y2b.downloader",
+  "build": {
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Y2B 下载器",
+        "width": 1120,
+        "height": 760,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+    "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "resources": {
+      "resources/": "resources/"
+    },
+    "windows": {
+      "nsis": {
+        "languages": ["English", "SimpChinese"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": ["https://github.com/YOUR_NAME/Y2B/releases/latest/download/latest.json"],
+      "dialog": true,
+      "pubkey": "REPLACE_WITH_YOUR_TAURI_UPDATER_PUBKEY"
+    }
+  }
+}

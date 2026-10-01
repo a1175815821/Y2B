@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+# 体积大的内置二进制不进仓库（发版前按 README 放好再 build）
+resources/*.exe
+src-tauri/resources/*.exe
+/*.exe
+*.log
+.DS_Store
+Thumbs.db
