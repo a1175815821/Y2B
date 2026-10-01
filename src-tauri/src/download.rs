@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::cookies::cookie_file_for;
+use crate::history::push_history;
 use crate::ytdlp::{hide_tokio, locate_ytdlp};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -24,6 +25,9 @@ pub struct DownloadRequest {
     pub proxy: Option<String>,
     pub filename_template: String,
     pub task_label: Option<String>,
+    /// 前端已知的视频标题，用于历史记录展示；缺省为 None
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +91,14 @@ fn map_selector(sel: &str) -> (String, Vec<String>) {
     }
     match sel {
         "best" => ("bv*+ba/b".into(), vec![]),
+        "best2160" => (
+            "bv*[height<=2160]+ba/b[height<=2160]/b".into(),
+            vec![],
+        ),
+        "best1440" => (
+            "bv*[height<=1440]+ba/b[height<=1440]/b".into(),
+            vec![],
+        ),
         "best1080" => (
             "bv*[height<=1080]+ba/b[height<=1080]/b".into(),
             vec![],
@@ -360,6 +372,15 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
                 line: Some("已取消".into()),
             },
         );
+        push_history(
+            &app,
+            request.url.clone(),
+            request.title.clone(),
+            request.out_dir.clone(),
+            request.format_selector.clone(),
+            "error",
+            Some("已取消".into()),
+        );
         return Err("已取消下载".into());
     }
 
@@ -377,6 +398,15 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             eta: None,
             line: Some("下载完成".into()),
         });
+        push_history(
+            &app,
+            request.url.clone(),
+            request.title.clone(),
+            request.out_dir.clone(),
+            request.format_selector.clone(),
+            "ok",
+            None,
+        );
         Ok("ok".into())
     } else {
         let tail: String = {
@@ -402,6 +432,15 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             eta: None,
             line: Some(msg.clone()),
         });
+        push_history(
+            &app,
+            request.url.clone(),
+            request.title.clone(),
+            request.out_dir.clone(),
+            request.format_selector.clone(),
+            "error",
+            Some(msg.clone()),
+        );
         Err(msg)
     }
 }

@@ -2,17 +2,19 @@ import "./styles.css";
 import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TAURI_COMMANDS, YtdlpStatus, FfmpegStatus, AppSettings } from "./types";
-import { IconDownload, IconCollection, IconKey, IconGear, IconRefresh } from "./components/icons";
+import { IconDownload, IconCollection, IconKey, IconGear, IconRefresh, IconCheck } from "./components/icons";
 import SingleDownload from "./components/SingleDownload";
 import CreatorBatch from "./components/CreatorBatch";
 import CookieManager from "./components/CookieManager";
 import SettingsPanel from "./components/SettingsPanel";
+import HistoryPanel from "./components/HistoryPanel";
 
-type Tab = "single" | "creator" | "cookies" | "settings";
+type Tab = "single" | "creator" | "cookies" | "history" | "settings";
 
 const NAV: { id: Tab; title: string; desc: string; icon: React.ReactNode }[] = [
   { id: "single", title: "新建下载", desc: "单视频 / 链接", icon: <IconDownload size={19} /> },
   { id: "creator", title: "创作者批量", desc: "频道扫描勾选", icon: <IconCollection size={19} /> },
+  { id: "history", title: "下载历史", desc: "完成 / 定位", icon: <IconCheck size={19} /> },
   { id: "cookies", title: "Cookie 管理", desc: "Netscape 导入", icon: <IconKey size={19} /> },
   { id: "settings", title: "设置与更新", desc: "偏好 / 版本", icon: <IconGear size={19} /> },
 ];
@@ -123,6 +125,7 @@ export default function App() {
 
             {tab === "single" && <SingleDownload settings={settings} onSettingsChange={refreshEnv} />}
             {tab === "creator" && <CreatorBatch settings={settings} />}
+            {tab === "history" && <HistoryPanel />}
             {tab === "cookies" && <CookieManager onChange={refreshEnv} />}
             {tab === "settings" && (
               <SettingsPanel settings={settings} ytdlp={ytdlp} onChange={refreshEnv} />

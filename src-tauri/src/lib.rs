@@ -1,6 +1,7 @@
 // Y2B 后端入口：注册所有 command
 mod cookies;
 mod download;
+mod history;
 mod media;
 mod settings;
 mod ytdlp;
@@ -36,6 +37,10 @@ pub fn run() {
             media::list_formats,
             download::start_download,
             download::cancel_download,
+            history::history_list,
+            history::history_remove,
+            history::history_clear,
+            history::open_in_folder,
             cookies::cookie_list,
             cookies::cookie_import,
             cookies::cookie_remove,

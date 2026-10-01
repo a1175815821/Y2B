@@ -38,7 +38,7 @@
   },
   "plugins": {
     "updater": {
-      "active": true,
+      "active": false,
       "endpoints": ["https://github.com/YOUR_NAME/Y2B/releases/latest/download/latest.json"],
       "dialog": true,
       "pubkey": "REPLACE_WITH_YOUR_TAURI_UPDATER_PUBKEY"

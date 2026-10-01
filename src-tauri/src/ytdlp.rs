@@ -146,14 +146,30 @@ pub async fn ytdlp_status(app: AppHandle) -> YtdlpStatus {
     }
 }
 
-async fn download_to(url: &str, dest: &PathBuf) -> Result<(), String> {
+/// 按设置里的代理构建 reqwest 客户端；代理地址非法时回退直连，避免整功能不可用
+fn client_builder(proxy: Option<&str>) -> reqwest::ClientBuilder {
+    let mut b = reqwest::Client::builder().user_agent("Y2B-downloader");
+    if let Some(p) = proxy.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(px) = reqwest::Proxy::all(p) {
+            b = b.proxy(px);
+        }
+    }
+    b
+}
+
+fn settings_proxy(app: &AppHandle) -> Option<String> {
+    crate::settings::get_settings(app.clone())
+        .ok()
+        .and_then(|s| s.proxy)
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+}
+
+async fn download_to(url: &str, dest: &PathBuf, proxy: Option<&str>) -> Result<(), String> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let client = reqwest::Client::builder()
-        .user_agent("Y2B-downloader")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = client_builder(proxy).build().map_err(|e| e.to_string())?;
     let mut resp = client
         .get(url)
         .send()
@@ -181,15 +197,13 @@ pub async fn ensure_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     let dest = data.join("bin").join("yt-dlp.exe");
-    download_to(YTDLP_WIN_ASSET, &dest).await?;
+    let proxy = settings_proxy(&app);
+    download_to(YTDLP_WIN_ASSET, &dest, proxy.as_deref()).await?;
     Ok(ytdlp_status(app).await)
 }
 
-async fn fetch_latest_release() -> Result<GithubRelease, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Y2B-downloader")
-        .build()
-        .map_err(|e| e.to_string())?;
+async fn fetch_latest_release(proxy: Option<&str>) -> Result<GithubRelease, String> {
+    let client = client_builder(proxy).build().map_err(|e| e.to_string())?;
     let rel: GithubRelease = client
         .get(YTDLP_API_LATEST)
         .header("Accept", "application/vnd.github+json")
@@ -206,8 +220,9 @@ async fn fetch_latest_release() -> Result<GithubRelease, String> {
 
 #[tauri::command]
 pub async fn check_ytdlp_update(app: AppHandle) -> Result<YtdlpUpdateInfo, String> {
+    let proxy = settings_proxy(&app);
     let st = ytdlp_status(app).await;
-    let rel = fetch_latest_release().await?;
+    let rel = fetch_latest_release(proxy.as_deref()).await?;
     let latest = rel.tag_name.trim().to_string();
     let need = match &st.version {
         Some(cur) => cur.trim() != latest,
@@ -237,7 +252,8 @@ pub async fn update_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
     };
     // 先下到临时文件再替换，避免断网损坏旧版本
     let tmp = dest.with_extension("exe.new");
-    download_to(YTDLP_WIN_ASSET, &tmp).await?;
+    let proxy = settings_proxy(&app);
+    download_to(YTDLP_WIN_ASSET, &tmp, proxy.as_deref()).await?;
     // 简单校验：能跑出 --version 才替换
     let v = bin_version(&tmp).await.ok_or("新版本校验失败（无法运行）")?;
     let _ = std::fs::remove_file(&dest);
@@ -314,7 +330,8 @@ pub async fn ensure_ffmpeg(app: AppHandle) -> Result<FfmpegStatus, String> {
     let url = "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let zip_path = data.join("bin").join("ffmpeg.zip");
-    download_to(url, &zip_path).await?;
+    let proxy = settings_proxy(&app);
+    download_to(url, &zip_path, proxy.as_deref()).await?;
     // 解压出 bin/ffmpeg.exe
     let file = std::fs::File::open(&zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;

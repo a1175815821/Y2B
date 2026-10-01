@@ -208,7 +208,7 @@ export default function SettingsPanel({
             <p>当前版本 v0.1.0 · 基于 tauri-plugin-updater</p>
           </div>
           <div style={{ marginLeft: "auto" }}>
-            <CheckAppUpdateButton say={say} />
+            <CheckAppUpdateButton say={say} proxy={form.proxy ?? null} />
           </div>
         </div>
         <div className="hint">
@@ -298,7 +298,13 @@ export default function SettingsPanel({
   );
 }
 
-function CheckAppUpdateButton({ say }: { say: (k: "info" | "error" | "success", s: string) => void }) {
+function CheckAppUpdateButton({
+  say,
+  proxy,
+}: {
+  say: (k: "info" | "error" | "success", s: string) => void;
+  proxy: string | null;
+}) {
   const [busy, setBusy] = useState(false);
   return (
     <button
@@ -308,9 +314,12 @@ function CheckAppUpdateButton({ say }: { say: (k: "info" | "error" | "success", 
         setBusy(true);
         try {
           const { check } = await import("@tauri-apps/plugin-updater");
-          const u = await check();
+          // 设置页代理同样用于更新检查，解决公司网/代理用户永远检查失败的问题
+          const u = await check(
+            proxy?.trim() ? { proxy: proxy.trim(), timeout: 20000 } : { timeout: 20000 }
+          );
           if (!u) {
-            say("success", "应用已是最新（或尚未配置更新地址）。");
+            say("success", "应用已是最新。");
           } else {
             say("info", `发现新版本 ${u.version}，开始下载安装…`);
             await u.downloadAndInstall();
@@ -318,7 +327,13 @@ function CheckAppUpdateButton({ say }: { say: (k: "info" | "error" | "success", 
             await relaunch();
           }
         } catch (e) {
-          say("error", `应用更新检查失败：${String(e)}`);
+          const msg = String(e);
+          // 未发版配置时给明确指引，而不是一串底层报错
+          if (msg.includes("YOUR_NAME") || msg.includes("pubkey") || msg.includes("url")) {
+            say("info", "应用自更新尚未配置（需发版时填签名公钥与 latest.json 地址），不影响 yt-dlp 下载功能。");
+          } else {
+            say("error", `应用更新检查失败：${msg}（公司网请先在下方设置代理）`);
+          }
         } finally {
           setBusy(false);
         }

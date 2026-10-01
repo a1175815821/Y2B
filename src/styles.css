@@ -245,14 +245,20 @@ input[type="checkbox"].check { width: 17px; height: 17px; accent-color: var(--ac
 .icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---- 分段选择 ---- */
-.seg { display: flex; flex-wrap: wrap; gap: 8px; }
+/* ---- 分段选择（网格卡片式） ---- */
+.seg { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
 .seg-btn {
-  padding: 8px 15px; border-radius: 10px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 10px;
   background: var(--bg-inset);
   border: 1px solid var(--line-strong);
   color: var(--text-2); font-size: 13px; font-weight: 500; font-family: var(--font);
-  cursor: pointer;
+  cursor: pointer; text-align: left;
+  transition: all 0.16s ease;
+}
+.seg-btn::before {
+  content: ""; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+  border: 1.5px solid var(--text-3);
   transition: all 0.16s ease;
 }
 .seg-btn:hover { color: var(--text-1); border-color: rgba(255, 255, 255, 0.22); }
@@ -261,6 +267,10 @@ input[type="checkbox"].check { width: 17px; height: 17px; accent-color: var(--ac
   border-color: rgba(91, 140, 255, 0.6);
   background: linear-gradient(135deg, rgba(91, 140, 255, 0.3), rgba(139, 92, 246, 0.24));
   box-shadow: 0 2px 12px rgba(91, 140, 255, 0.25);
+}
+.seg-btn.active::before {
+  background: var(--accent); border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(91, 140, 255, 0.8);
 }
 
 /* ---- 提示条 ---- */

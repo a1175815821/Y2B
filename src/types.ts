@@ -16,6 +16,10 @@ export const TAURI_COMMANDS = {
   cookieValidate: "cookie_validate",
   getSettings: "get_settings",
   saveSettings: "save_settings",
+  historyList: "history_list",
+  historyRemove: "history_remove",
+  historyClear: "history_clear",
+  openInFolder: "open_in_folder",
 } as const;
 
 // ---------- yt-dlp 类型 ----------
@@ -71,6 +75,7 @@ export interface FormatItem {
   format_id: string;
   ext: string;
   resolution: string | null;
+  height: number | null;
   fps: number | null;
   vcodec: string | null;
   acodec: string | null;
@@ -83,7 +88,7 @@ export interface FormatItem {
 
 export interface DownloadRequest {
   url: string;
-  /** yt-dlp -f 参数。预设由后端映射，最常用：best / best720 / best1080 / audio_mp3 / audio_m4a / format_id:<id> */
+  /** yt-dlp -f 参数。预设由后端映射，如 best / best2160 / best1440 / best1080 / audio_mp3 / format_id:<id> */
   format_selector: string;
   out_dir: string;
   /** cookie profile 名，为空表示不使用 cookie */
@@ -96,6 +101,8 @@ export interface DownloadRequest {
   filename_template: string;
   /** 批量下载时附带 video id，便于前端区分进度事件 */
   task_label?: string;
+  /** 已知标题，用于历史记录展示 */
+  title?: string | null;
 }
 
 export interface DownloadProgress {
@@ -133,6 +140,8 @@ export interface AppSettings {
 
 export const FORMAT_PRESETS = [
   { value: "best", label: "最佳画质（自动合并）" },
+  { value: "best2160", label: "最高 2160p（4K）" },
+  { value: "best1440", label: "最高 1440p（2K）" },
   { value: "best1080", label: "最高 1080p" },
   { value: "best720", label: "最高 720p" },
   { value: "best480", label: "最高 480p" },
@@ -140,6 +149,18 @@ export const FORMAT_PRESETS = [
   { value: "audio_m4a", label: "仅音频 → m4a" },
   { value: "manual", label: "手动指定 Format ID…" },
 ] as const;
+
+export interface HistoryEntry {
+  id: string;
+  url: string;
+  title: string | null;
+  out_dir: string;
+  format_selector: string;
+  /** ok | error */
+  status: string;
+  detail: string | null;
+  created_at: string;
+}
 
 export function formatBytes(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return "-";
@@ -152,4 +173,11 @@ export function formatBytes(n: number | null | undefined): string {
     u++;
   }
   return `${v.toFixed(1)} ${units[u]}`;
+}
+
+/** tbr 单位 Kbps：≥1000 显示 x.xM，否则 xxxk */
+export function formatRate(tbr: number | null | undefined): string {
+  if (tbr == null || Number.isNaN(tbr) || tbr <= 0) return "-";
+  if (tbr >= 1000) return `${(tbr / 1000).toFixed(1)}M`;
+  return `${Math.round(tbr)}k`;
 }

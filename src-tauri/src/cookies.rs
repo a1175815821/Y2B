@@ -138,7 +138,31 @@ pub fn cookie_set_default(app: AppHandle, name: Option<String>) -> Result<(), St
     Ok(())
 }
 
-/// 轻量校验：用该 cookie 请求一条视频的 --dump-json（只取标题），成功即有效
+/// 轻量校验：用该 cookie 依次探测常青测试视频，成功即有效。
+/// 之所以轮询多个，是因为单个视频可能下架（曾因此误报）；
+/// 通过 stderr 区分“视频不可用”（换下一个）与“需登录/机器人验证”（Cookie 真无效）。
+const COOKIE_PROBE_VIDEOS: [&str; 2] = [
+    // Me at the zoo：YouTube 第一个视频，几乎不可能下架
+    "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+    // Big Buck Bunny：Blender 官方，十年以上稳定
+    "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+];
+
+fn stderr_means_bot_check(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("not a bot")
+        || s.contains("sign in to confirm")
+        || (s.contains("sign in") && s.contains("bot"))
+}
+
+fn stderr_means_video_gone(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("unavailable")
+        || s.contains("private video")
+        || s.contains("has been deleted")
+        || s.contains("does not exist")
+}
+
 #[tauri::command]
 pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, String> {
     use crate::ytdlp::{hide_tokio, locate_ytdlp};
@@ -148,27 +172,41 @@ pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, Str
     }
     let (bin, _) = locate_ytdlp(&app);
     let bin = bin.ok_or("yt-dlp 未就绪，请先下载内置 yt-dlp")?;
-    let mut cmd = tokio::process::Command::new(&bin);
-    hide_tokio(&mut cmd);
-    cmd.args([
-        "--cookies",
-        &cookie.to_string_lossy(),
-        "--dump-json",
-        "--no-playlist",
-        "--socket-timeout",
-        "15",
-        "https://www.youtube.com/watch?v=BaW_jenozKc",
-    ]);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output())
-        .await
-        .map_err(|_| "校验超时（45秒），请检查网络/代理后重试".to_string())?
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(format!("Cookie {name} 校验通过（可正常访问 YouTube）"))
-    } else {
-        Err(format!(
-            "校验未通过：{}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ))
+    let mut last_err = String::new();
+    for probe in COOKIE_PROBE_VIDEOS {
+        let mut cmd = tokio::process::Command::new(&bin);
+        hide_tokio(&mut cmd);
+        cmd.args([
+            "--cookies",
+            &cookie.to_string_lossy(),
+            "--dump-json",
+            "--no-playlist",
+            "--no-warnings",
+            "--socket-timeout",
+            "15",
+            probe,
+        ]);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output())
+            .await
+            .map_err(|_| "校验超时（45秒），请检查网络/代理后重试".to_string())?
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(format!("Cookie {name} 校验通过（可正常访问 YouTube）"));
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr_means_bot_check(&stderr) {
+            return Err(format!(
+                "Cookie 无效：YouTube 要求登录验证（not a bot），请重新导出 Cookie 后再导入。详情：{stderr}"
+            ));
+        }
+        // 视频本身不可用 → 换下一个探测，不算 Cookie 的错
+        last_err = stderr;
+        if !stderr_means_video_gone(&last_err) {
+            // 非预期错误也继续试下一个，保留现场
+            continue;
+        }
     }
+    Err(format!(
+        "校验未通过（测试视频均不可用或网络异常），请稍后重试。最后一次错误：{last_err}"
+    ))
 }

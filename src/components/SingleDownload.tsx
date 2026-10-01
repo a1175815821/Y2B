@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { notifyDownload, readClipboardLink } from "../utils";
 import {
   TAURI_COMMANDS,
   AppSettings,
@@ -10,6 +11,7 @@ import {
   DownloadProgress,
   FORMAT_PRESETS,
   formatBytes,
+  formatRate,
 } from "../types";
 import { IconLink, IconFilm, IconFolder, IconPlay, IconSearch, IconInfo, IconRefresh } from "./icons";
 
@@ -33,8 +35,20 @@ export default function SingleDownload({
   const [log, setLog] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [clipLink, setClipLink] = useState<string | null>(null);
 
   const pushLog = (s: string) => setLog((prev) => [...prev.slice(-199), s]);
+
+  // 剪贴板嗅探：首次挂载时读一次，有链接且输入框为空才提示
+  useEffect(() => {
+    let alive = true;
+    readClipboardLink().then((l) => {
+      if (alive && l) setClipLink((prev) => prev ?? l);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const resolve = async () => {
     if (!url.trim()) return;
@@ -111,13 +125,17 @@ export default function SingleDownload({
           concurrent_fragments: settings?.concurrent_fragments ?? 4,
           proxy: settings?.proxy ?? null,
           filename_template: settings?.filename_template ?? "%(title)s [%(id)s].%(ext)s",
+          title: media?.title ?? null,
         },
       });
       pushLog("下载命令已完成");
+      notifyDownload("Y2B 下载完成", media?.title || url.trim());
       onSettingsChange();
     } catch (e) {
-      setMsg(`下载失败：${String(e)}`);
-      pushLog(`ERROR: ${String(e)}`);
+      const msg = String(e);
+      setMsg(`下载失败：${msg}`);
+      pushLog(`ERROR: ${msg}`);
+      if (!msg.includes("已取消")) notifyDownload("Y2B 下载失败", (media?.title || url.trim()).slice(0, 100));
     } finally {
       unlisten();
       setDownloading(false);
@@ -171,6 +189,24 @@ export default function SingleDownload({
             <IconRefresh size={16} />
           </button>
         </div>
+        {clipLink && !url.trim() && (
+          <div className="callout info mt12">
+            <IconInfo size={16} />
+            <span className="grow">检测到剪贴板链接：{clipLink.slice(0, 80)}</span>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setUrl(clipLink);
+                setClipLink(null);
+              }}
+            >
+              填入
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setClipLink(null)}>
+              忽略
+            </button>
+          </div>
+        )}
         {media && (
           <div className="panel-soft mt16">
             <div className="media-hero">
@@ -237,6 +273,8 @@ export default function SingleDownload({
         )}
 
         {shownFormats.length > 0 ? (
+          <>
+          <div className="hint mt8">共 {shownFormats.length} 个可下载格式，已按画质从高到低排序（纯音频沉底）</div>
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
@@ -247,6 +285,7 @@ export default function SingleDownload({
                   <th>视频编码</th>
                   <th>音频编码</th>
                   <th>大小</th>
+                  <th>码率</th>
                   <th>备注</th>
                 </tr>
               </thead>
@@ -267,12 +306,14 @@ export default function SingleDownload({
                     <td>{f.vcodec ?? "-"}</td>
                     <td>{f.acodec ?? "-"}</td>
                     <td>{formatBytes(f.filesize ?? f.filesize_approx)}</td>
+                    <td>{formatRate(f.tbr)}</td>
                     <td>{f.format_note ?? ""}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          </>
         ) : (
           <div className="empty mt12">
             <IconFilm size={26} />
