@@ -110,9 +110,9 @@ async fn fetch_flat_json(
         .map_err(|_| "解析超时（90秒），请检查网络/代理后重试".to_string())?
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!(
-            "解析失败：{}",
-            String::from_utf8_lossy(&out.stderr).trim()
+        return Err(crate::errhint::friendly(
+            "解析失败",
+            &String::from_utf8_lossy(&out.stderr),
         ));
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("解析 yt-dlp 输出失败: {e}"))
@@ -381,9 +381,9 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
         .map_err(|_| "获取格式超时（60秒），请重试".to_string())?
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!(
-            "获取格式失败：{}",
-            String::from_utf8_lossy(&out.stderr).trim()
+        return Err(crate::errhint::friendly(
+            "获取格式失败",
+            &String::from_utf8_lossy(&out.stderr),
         ));
     }
     let json: serde_json::Value =

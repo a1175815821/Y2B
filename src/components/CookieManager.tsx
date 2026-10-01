@@ -72,7 +72,7 @@ export default function CookieManager({ onChange }: { onChange: () => void }) {
       const ok = await invoke<string>(TAURI_COMMANDS.cookieValidate, { name: n });
       say("success", ok);
     } catch (e) {
-      say("error", `校验失败：${String(e)}`);
+      say("error", String(e));
     }
   };
 

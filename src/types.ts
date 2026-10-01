@@ -101,6 +101,8 @@ export interface DownloadRequest {
   filename_template: string;
   /** 批量下载时附带 video id，便于前端区分进度事件 */
   task_label?: string;
+  /** 文件已存在时是否覆盖重下；false = 跳过（断点续传） */
+  overwrite: boolean;
   /** 已知标题，用于历史记录展示 */
   title?: string | null;
 }

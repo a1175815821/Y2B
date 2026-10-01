@@ -28,6 +28,9 @@ pub struct DownloadRequest {
     /// 前端已知的视频标题，用于历史记录展示；缺省为 None
     #[serde(default)]
     pub title: Option<String>,
+    /// 文件已存在时是否覆盖重下；缺省 false = 跳过（配合 --continue 实现断点续传）
+    #[serde(default)]
+    pub overwrite: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,6 +84,7 @@ fn is_interesting(line: &str, pct: Option<f64>) -> bool {
         || line.contains("[Merger]")
         || line.contains("[ExtractAudio]")
         || line.contains("Destination:")
+        || line.contains("has already been downloaded")
         || line.to_lowercase().contains("error")
 }
 
@@ -158,6 +162,8 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
         "--newline",
         "--progress",
         "--no-playlist",
+        // 断点续传：同名 .part 文件自动续下（默认行为，此处显式声明）
+        "--continue",
         "-f",
         &fmt,
         "-o",
@@ -171,6 +177,11 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
         "--retries",
         "3",
     ]);
+    // 已存在文件默认跳过不重下：批量中断后重跑只会补缺口，不会覆盖已完成文件；
+    // 用户在单视频页勾选“覆盖”时才去掉该保护
+    if !request.overwrite.unwrap_or(false) {
+        cmd.arg("--no-overwrites");
+    }
     for a in &extra {
         cmd.arg(a);
     }
@@ -194,7 +205,7 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
     });
     if let Some(px) = proxy {
         if !px.trim().is_empty() {
-            cmd.arg("--proxy").arg(px.trim().to_string());
+            cmd.arg("--proxy").arg(px.trim());
         }
     }
     cmd.arg(&request.url);
@@ -389,6 +400,16 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
         g.wait().await.map_err(|e| e.to_string())?
     };
     if status.success() {
+        // --no-overwrites 命中时 yt-dlp 退出码同样为 0，需区分“真下完”和“跳过”
+        let skipped = {
+            let t = stderr_tail.lock().unwrap();
+            t.iter().any(|l| l.contains("has already been downloaded"))
+        };
+        let done_line = if skipped {
+            "文件已存在，跳过下载"
+        } else {
+            "下载完成"
+        };
         emit(DownloadProgress {
             task_id: task_id.clone(),
             url: request.url.clone(),
@@ -396,7 +417,7 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             percent: Some(100.0),
             speed: None,
             eta: None,
-            line: Some("下载完成".into()),
+            line: Some(done_line.into()),
         });
         push_history(
             &app,
@@ -411,16 +432,15 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
     } else {
         let tail: String = {
             let t = stderr_tail.lock().unwrap();
-            t.iter().cloned().collect::<Vec<_>>().join(" | ")
+            t.iter().cloned().collect::<Vec<_>>().join("\n")
         };
-        let tail_short: String = tail.chars().take(800).collect();
-        let msg = if tail_short.trim().is_empty() {
-            format!("yt-dlp 退出码: {}", status.code().unwrap_or(-1))
+        let msg = if tail.trim().is_empty() {
+            format!("下载失败：yt-dlp 异常退出（退出码 {}），请重试", status.code().unwrap_or(-1))
         } else {
             format!(
-                "yt-dlp 退出码: {}，{}",
-                status.code().unwrap_or(-1),
-                tail_short
+                "下载失败：{}（退出码 {}）",
+                crate::errhint::friendly_yt_dlp_error(&tail),
+                status.code().unwrap_or(-1)
             )
         };
         emit(DownloadProgress {

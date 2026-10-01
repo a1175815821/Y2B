@@ -125,6 +125,8 @@ body {
   animation: pageIn 0.28s ease;
 }
 .page-inner { max-width: 1060px; margin: 0 auto; }
+/* 非活动页面仅隐藏不卸载，保留下载进度/日志/表单状态 */
+.tab-hidden { display: none; }
 @keyframes pageIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }

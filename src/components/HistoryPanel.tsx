@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TAURI_COMMANDS, HistoryEntry } from "../types";
 import { IconFolder, IconTrash, IconRefresh, IconInfo, IconPlay } from "./icons";
 
-export default function HistoryPanel() {
+export default function HistoryPanel({ active }: { active: boolean }) {
   const [items, setItems] = useState<HistoryEntry[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -24,6 +24,11 @@ export default function HistoryPanel() {
   useEffect(() => {
     refresh();
   }, []);
+
+  // 页面常驻挂载：每次切回本页时刷新，避免看到过期列表
+  useEffect(() => {
+    if (active) refresh();
+  }, [active]);
 
   const openDir = async (path: string) => {
     try {

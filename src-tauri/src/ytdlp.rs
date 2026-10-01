@@ -3,7 +3,8 @@
 //! 策略（Windows）：
 //! 1. resources/yt-dlp.exe（随安装包打包，tauri.conf.json bundle.resources）
 //! 2. %APPDATA%/com.y2b.downloader/bin/yt-dlp.exe（首次运行自动下载）
-//! 3. 系统 PATH 里的 yt-dlp / yt-dlp.exe
+//! 3. 系统 PATH 里的 yt-dlp / yt-dlp.exe。
+//!
 //! 检查更新走 GitHub API：yt-dlp/yt-dlp releases/latest
 
 use serde::{Deserialize, Serialize};
@@ -55,8 +56,17 @@ struct GithubRelease {
 }
 
 /// 解析出可执行文件路径（按优先级），返回 (路径, 来源)
+/// 顺序：应用数据目录（用户下载/更新的最新版，优先于出厂内置）
+/// → 打包 resources（出厂内置）→ 系统 PATH
 pub fn locate_ytdlp(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
-    // 1. 打包 resources
+    // 1. 应用数据目录下载/更新的副本（版本最新，优先）
+    if let Ok(data) = app.path().app_data_dir() {
+        let p = data.join("bin").join("yt-dlp.exe");
+        if p.is_file() {
+            return (Some(p), "downloaded");
+        }
+    }
+    // 2. 打包 resources（出厂内置版本）
     if let Ok(res_dir) = app.path().resource_dir() {
         for cand in [
             res_dir.join("resources").join("yt-dlp.exe"),
@@ -76,16 +86,9 @@ pub fn locate_ytdlp(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
             return (Some(dev), "bundled");
         }
     }
-    // 2. 应用数据目录下载的副本
-    if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("bin").join("yt-dlp.exe");
-        if p.is_file() {
-            return (Some(p), "downloaded");
-        }
-    }
     // 3. 系统 PATH
     for name in ["yt-dlp.exe", "yt-dlp"] {
-        let mut where_cmd = std::process::Command::new("where");
+        let mut where_cmd = std::process::Command::new(path_probe_cmd());
         hide_std(&mut where_cmd);
         if let Ok(out) = where_cmd.arg(name).output() {
             if out.status.success() {
@@ -102,6 +105,18 @@ pub fn locate_ytdlp(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
         }
     }
     (None, "missing")
+}
+
+/// PATH 探针命令：Windows 用 where，其他平台用 which
+fn path_probe_cmd() -> &'static str {
+    #[cfg(windows)]
+    {
+        "where"
+    }
+    #[cfg(not(windows))]
+    {
+        "which"
+    }
 }
 
 async fn bin_version(path: &std::path::Path) -> Option<String> {
@@ -239,17 +254,13 @@ pub async fn check_ytdlp_update(app: AppHandle) -> Result<YtdlpUpdateInfo, Strin
 
 #[tauri::command]
 pub async fn update_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
-    let (path, source) = locate_ytdlp(&app);
-    // bundled 的不覆盖安装包文件，统一更新到 app_data/bin
-    let dest = if source == "downloaded" {
-        path.unwrap()
-    } else {
-        app.path()
-            .app_data_dir()
-            .map_err(|e| e.to_string())?
-            .join("bin")
-            .join("yt-dlp.exe")
-    };
+    // 更新统一写入应用数据目录；按 locate 优先级，该副本会盖过出厂内置版本
+    let dest = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("bin")
+        .join("yt-dlp.exe");
     // 先下到临时文件再替换，避免断网损坏旧版本
     let tmp = dest.with_extension("exe.new");
     let proxy = settings_proxy(&app);
@@ -272,6 +283,13 @@ pub struct FfmpegStatus {
 }
 
 fn locate_ffmpeg(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
+    // 应用数据目录优先（用户下载的），出厂内置次之：保证更新/下载真正生效
+    if let Ok(data) = app.path().app_data_dir() {
+        let p = data.join("bin").join("ffmpeg.exe");
+        if p.is_file() {
+            return (Some(p), "downloaded");
+        }
+    }
     if let Ok(res_dir) = app.path().resource_dir() {
         for cand in [
             res_dir.join("resources").join("ffmpeg.exe"),
@@ -289,14 +307,8 @@ fn locate_ffmpeg(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
             return (Some(dev), "bundled");
         }
     }
-    if let Ok(data) = app.path().app_data_dir() {
-        let p = data.join("bin").join("ffmpeg.exe");
-        if p.is_file() {
-            return (Some(p), "downloaded");
-        }
-    }
     {
-        let mut where_cmd = std::process::Command::new("where");
+        let mut where_cmd = std::process::Command::new(path_probe_cmd());
         hide_std(&mut where_cmd);
         if where_cmd
             .arg("ffmpeg.exe")
@@ -345,5 +357,9 @@ pub async fn ensure_ffmpeg(app: AppHandle) -> Result<FfmpegStatus, String> {
         }
     }
     let _ = std::fs::remove_file(&zip_path);
+    // 压缩包结构变化时可能根本没解出文件，必须校验，否则会静默“成功”
+    if !dest.is_file() {
+        return Err("ffmpeg 下载包解压失败（包内未找到 bin/ffmpeg.exe），请稍后重试".into());
+    }
     Ok(ffmpeg_status(app))
 }

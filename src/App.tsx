@@ -105,7 +105,9 @@ export default function App() {
 
       {/* ============ 内容区 ============ */}
       <div className="content">
-        <main className="page" key={tab}>
+        {/* 页面常驻挂载、仅 CSS 显隐：切换页面不卸载，
+            下载进度/日志/勾选/表单状态全部保留 */}
+        <main className="page">
           <div className="page-inner">
             {bootError && (
               <div className="callout error" style={{ marginBottom: 16 }}>
@@ -123,13 +125,21 @@ export default function App() {
               </div>
             )}
 
-            {tab === "single" && <SingleDownload settings={settings} onSettingsChange={refreshEnv} />}
-            {tab === "creator" && <CreatorBatch settings={settings} />}
-            {tab === "history" && <HistoryPanel />}
-            {tab === "cookies" && <CookieManager onChange={refreshEnv} />}
-            {tab === "settings" && (
+            <section className={tab === "single" ? "" : "tab-hidden"}>
+              <SingleDownload settings={settings} onSettingsChange={refreshEnv} />
+            </section>
+            <section className={tab === "creator" ? "" : "tab-hidden"}>
+              <CreatorBatch settings={settings} />
+            </section>
+            <section className={tab === "history" ? "" : "tab-hidden"}>
+              <HistoryPanel active={tab === "history"} />
+            </section>
+            <section className={tab === "cookies" ? "" : "tab-hidden"}>
+              <CookieManager onChange={refreshEnv} />
+            </section>
+            <section className={tab === "settings" ? "" : "tab-hidden"}>
               <SettingsPanel settings={settings} ytdlp={ytdlp} onChange={refreshEnv} />
-            )}
+            </section>
           </div>
         </main>
 

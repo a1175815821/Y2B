@@ -1,6 +1,7 @@
 // Y2B 后端入口：注册所有 command
 mod cookies;
 mod download;
+mod errhint;
 mod history;
 mod media;
 mod settings;

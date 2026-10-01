@@ -207,6 +207,7 @@ pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, Str
         }
     }
     Err(format!(
-        "校验未通过（测试视频均不可用或网络异常），请稍后重试。最后一次错误：{last_err}"
+        "校验未通过：{}，请稍后重试",
+        crate::errhint::friendly_yt_dlp_error(&last_err)
     ))
 }

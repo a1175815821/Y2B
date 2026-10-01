@@ -35,6 +35,7 @@ export default function SingleDownload({
   const [log, setLog] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [overwrite, setOverwrite] = useState(false);
   const [clipLink, setClipLink] = useState<string | null>(null);
 
   const pushLog = (s: string) => setLog((prev) => [...prev.slice(-199), s]);
@@ -64,7 +65,7 @@ export default function SingleDownload({
       if (r.kind === "video") await loadFormats(url.trim());
       else setFormats([]);
     } catch (e) {
-      setMsg(`解析失败：${String(e)}`);
+      setMsg(String(e));
     } finally {
       setResolving(false);
     }
@@ -79,7 +80,7 @@ export default function SingleDownload({
       setFormats(f);
       pushLog(`获取到 ${f.length} 个格式`);
     } catch (e) {
-      setMsg(`获取格式失败：${String(e)}`);
+      setMsg(String(e));
     } finally {
       setLoadingFormats(false);
     }
@@ -126,6 +127,7 @@ export default function SingleDownload({
           proxy: settings?.proxy ?? null,
           filename_template: settings?.filename_template ?? "%(title)s [%(id)s].%(ext)s",
           title: media?.title ?? null,
+          overwrite,
         },
       });
       pushLog("下载命令已完成");
@@ -133,7 +135,7 @@ export default function SingleDownload({
       onSettingsChange();
     } catch (e) {
       const msg = String(e);
-      setMsg(`下载失败：${msg}`);
+      setMsg(msg);
       pushLog(`ERROR: ${msg}`);
       if (!msg.includes("已取消")) notifyDownload("Y2B 下载失败", (media?.title || url.trim()).slice(0, 100));
     } finally {
@@ -358,6 +360,15 @@ export default function SingleDownload({
         <div className="hint mt8">
           Cookie：{settings?.default_cookie_profile ?? "未使用"}（在「Cookie 管理」导入并设为默认后自动生效）
         </div>
+        <label className="row mt8" style={{ gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            className="check"
+            checked={overwrite}
+            onChange={(e) => setOverwrite(e.target.checked)}
+          />
+          <span className="hint">文件已存在时覆盖重下（不勾选则跳过：中断后重跑自动续传，已下完的不重复下载）</span>
+        </label>
 
         {progress && (
           <div className="mt16">

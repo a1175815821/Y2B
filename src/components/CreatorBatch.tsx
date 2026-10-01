@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -28,6 +28,8 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   const [pageSize, setPageSize] = useState(100);
   const [results, setResults] = useState<Record<string, "ok" | "fail">>({});
   const [clipLink, setClipLink] = useState<string | null>(null);
+  // 取消标志：补后端 CANCEL 在“条目间隙”被重置的时间窗，避免取消丢失
+  const cancelRef = useRef(false);
 
   const pushLog = (s: string) => setLog((p) => [...p.slice(-299), s]);
 
@@ -68,7 +70,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
       setResults({});
       pushLog(`扫描到 ${r.video_count ?? r.entries_preview.length} 个视频（显示前 ${r.entries_preview.length} 条）`);
     } catch (e) {
-      setMsg(`扫描失败：${String(e)}`);
+      setMsg(String(e));
     } finally {
       setScanning(false);
     }
@@ -93,6 +95,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   const selected: VideoEntry[] = (media?.entries_preview ?? []).filter((e) => checked[e.id]);
 
   const cancel = async () => {
+    cancelRef.current = true;
     try {
       await invoke(TAURI_COMMANDS.cancelDownload);
       pushLog("已发送取消请求，当前任务完成后将停止…");
@@ -110,6 +113,11 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     });
     try {
       for (let i = 0; i < list.length; i++) {
+        if (cancelRef.current) {
+          pushLog("批量已取消");
+          cancelled = true;
+          break;
+        }
         const v = list[i];
         pushLog(`(${i + 1}/${list.length}) 开始：${v.title} ${v.url}`);
         try {
@@ -124,6 +132,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
               filename_template: settings?.filename_template ?? "%(title)s [%(id)s].%(ext)s",
               task_label: v.id,
               title: v.title ?? null,
+              overwrite: false,
             },
           });
           pushLog(`(${i + 1}/${list.length}) 完成`);
@@ -162,6 +171,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     setRunning(true);
     setMsg(null);
     setDone(0);
+    cancelRef.current = false;
     const { ok, fail, cancelled } = await downloadList(list, dir);
     setRunning(false);
     if (!cancelled) notifyDownload("Y2B 批量完成", `成功 ${ok} / 失败 ${fail}（本次 ${list.length} 个）`);
