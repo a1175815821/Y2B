@@ -67,7 +67,17 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   );
   const selected: VideoEntry[] = (media?.entries_preview ?? []).filter((e) => checked[e.id]);
 
+  const cancel = async () => {
+    try {
+      await invoke(TAURI_COMMANDS.cancelDownload);
+      pushLog("已发送取消请求，当前任务完成后将停止…");
+    } catch (e) {
+      pushLog(`取消失败：${String(e)}`);
+    }
+  };
+
   const batchDownload = async () => {
+    if (running) return;
     const dir = (outDir || settings?.out_dir || "").trim();
     if (selected.length === 0 || !dir) {
       setMsg("请先勾选视频并选择输出目录");
@@ -98,7 +108,13 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
           });
           pushLog(`(${i + 1}/${selected.length}) 完成`);
         } catch (e) {
-          pushLog(`(${i + 1}/${selected.length}) 失败：${String(e)}`);
+          const msg = String(e);
+          pushLog(`(${i + 1}/${selected.length}) 失败：${msg}`);
+          // 用户主动取消：直接中断整个批量，而不是继续下一个（下一个会重置取消标志）
+          if (msg.includes("已取消")) {
+            pushLog("批量已取消");
+            break;
+          }
         }
         setDone(i + 1);
       }
@@ -228,14 +244,20 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
               value={outDir || settings?.out_dir || ""}
               onChange={(e) => setOutDir(e.target.value)}
             />
-            <button className="btn btn-ghost" onClick={pickDir}>
+            <button className="btn btn-ghost" onClick={pickDir} disabled={running}>
               <IconFolder size={15} />
               选择…
             </button>
-            <button className="btn btn-primary" onClick={batchDownload} disabled={running}>
-              <IconPlay size={15} />
-              {running ? `下载中 ${done}/${selected.length}…` : `批量下载 (${selected.length})`}
-            </button>
+            {running ? (
+              <button className="btn btn-danger" onClick={cancel}>
+                取消 ({done}/{selected.length})
+              </button>
+            ) : (
+              <button className="btn btn-primary" onClick={batchDownload} disabled={scanning}>
+                <IconPlay size={15} />
+                {`批量下载 (${selected.length})`}
+              </button>
+            )}
           </div>
         </div>
       )}

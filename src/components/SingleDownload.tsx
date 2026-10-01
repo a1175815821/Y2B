@@ -32,6 +32,7 @@ export default function SingleDownload({
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const pushLog = (s: string) => setLog((prev) => [...prev.slice(-199), s]);
 
@@ -77,13 +78,24 @@ export default function SingleDownload({
 
   const selector = preset === "manual" ? `format_id:${manualId.trim()}` : preset;
 
+  const cancel = async () => {
+    try {
+      await invoke(TAURI_COMMANDS.cancelDownload);
+      pushLog("已发送取消请求…");
+    } catch (e) {
+      pushLog(`取消失败：${String(e)}`);
+    }
+  };
+
   const download = async () => {
+    if (downloading) return;
     if (!url.trim() || !outDir.trim()) {
       setMsg("请填写链接和输出目录");
       return;
     }
     setMsg(null);
     setProgress(null);
+    setDownloading(true);
     const unlisten = await listen<DownloadProgress>("download-progress", (ev) => {
       setProgress(ev.payload);
       if (ev.payload.line) pushLog(ev.payload.line);
@@ -108,6 +120,7 @@ export default function SingleDownload({
       pushLog(`ERROR: ${String(e)}`);
     } finally {
       unlisten();
+      setDownloading(false);
     }
   };
 
@@ -286,14 +299,20 @@ export default function SingleDownload({
               onChange={(e) => setOutDir(e.target.value)}
             />
           </div>
-          <button className="btn btn-ghost" onClick={pickDir}>
+          <button className="btn btn-ghost" onClick={pickDir} disabled={downloading}>
             <IconFolder size={15} />
             选择…
           </button>
-          <button className="btn btn-primary" onClick={download}>
-            <IconPlay size={15} />
-            开始下载
-          </button>
+          {downloading ? (
+            <button className="btn btn-danger" onClick={cancel}>
+              取消下载
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={download} disabled={resolving}>
+              <IconPlay size={15} />
+              开始下载
+            </button>
+          )}
         </div>
         <div className="hint mt8">
           Cookie：{settings?.default_cookie_profile ?? "未使用"}（在「Cookie 管理」导入并设为默认后自动生效）

@@ -4,13 +4,15 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::cookies::cookie_file_for;
-use crate::ytdlp::locate_ytdlp;
+use crate::ytdlp::{hide_tokio, locate_ytdlp};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DownloadRequest {
@@ -41,6 +43,41 @@ static CANCEL: AtomicBool = AtomicBool::new(false);
 pub fn cancel_download() -> Result<(), String> {
     CANCEL.store(true, Ordering::SeqCst);
     Ok(())
+}
+
+static RE_FULL: OnceLock<Regex> = OnceLock::new();
+static RE_SIMPLE: OnceLock<Regex> = OnceLock::new();
+
+fn re_full() -> &'static Regex {
+    RE_FULL.get_or_init(|| {
+        Regex::new(r"\[download\]\s+(\d+(?:\.\d+)?)%.*?at\s+(\S+).*?ETA\s+(\S+)").unwrap()
+    })
+}
+fn re_simple() -> &'static Regex {
+    RE_SIMPLE
+        .get_or_init(|| Regex::new(r"\[download\]\s+(\d+(?:\.\d+)?)%").unwrap())
+}
+
+fn parse_progress(line: &str) -> (Option<f64>, Option<String>, Option<String>) {
+    if let Some(c) = re_full().captures(line) {
+        (
+            c.get(1).and_then(|m| m.as_str().parse().ok()),
+            c.get(2).map(|m| m.as_str().to_string()),
+            c.get(3).map(|m| m.as_str().to_string()),
+        )
+    } else if let Some(c) = re_simple().captures(line) {
+        (c.get(1).and_then(|m| m.as_str().parse().ok()), None, None)
+    } else {
+        (None, None, None)
+    }
+}
+
+fn is_interesting(line: &str, pct: Option<f64>) -> bool {
+    pct.is_some()
+        || line.contains("[Merger]")
+        || line.contains("[ExtractAudio]")
+        || line.contains("Destination:")
+        || line.to_lowercase().contains("error")
 }
 
 /// 预设 → yt-dlp 参数
@@ -85,6 +122,9 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
     std::fs::create_dir_all(&request.out_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
 
     let (fmt, extra) = map_selector(request.format_selector.trim());
+    if fmt.is_empty() {
+        return Err("Format ID 为空，请先选择一个格式".into());
+    }
     let task_id = request
         .task_label
         .clone()
@@ -101,6 +141,7 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
     );
 
     let mut cmd = tokio::process::Command::new(&bin);
+    hide_tokio(&mut cmd);
     cmd.args([
         "--newline",
         "--progress",
@@ -147,8 +188,11 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
     cmd.arg(&request.url);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // 防止闪现 CMD 窗口由 hide_tokio 处理；此处再确保不继承控制台
+    cmd.kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
+    let child = cmd.spawn().map_err(|e| format!("启动 yt-dlp 失败: {e}"))?;
+    let child = Arc::new(tokio::sync::Mutex::new(child));
     let emit = |payload: DownloadProgress| {
         let _ = app.emit("download-progress", payload);
     };
@@ -162,74 +206,167 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
         line: Some(format!("开始下载 {}", request.url)),
     });
 
-    // 进度正则：[download]  12.3% of ~... at ... ETA ...
-    let re = Regex::new(r"\[download\]\s+(\d+(?:\.\d+)?)%.*?at\s+(\S+).*?ETA\s+(\S+)").unwrap();
-    let re_simple = Regex::new(r"\[download\]\s+(\d+(?:\.\d+)?)%").unwrap();
+    // stderr 兜底：保留最后 30 行用于失败时定位原因
+    let stderr_tail: Arc<Mutex<VecDeque<String>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(30)));
+    // 进度节流：避免每秒几十次 emit 卡死前端
+    let last_emit: Arc<Mutex<Instant>> =
+        Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
 
-    if let Some(stdout) = child.stdout.take() {
+    let (mut stdout_taken, mut stderr_taken) = {
+        let mut g = child.lock().await;
+        (g.stdout.take(), g.stderr.take())
+    };
+
+    // 取消监听：轮询标志并 kill，避免 cancel 后还等到进程自然退出
+    let child_for_cancel = child.clone();
+    let cancel_watcher = tokio::spawn(async move {
+        loop {
+            if CANCEL.load(Ordering::SeqCst) {
+                let mut g = child_for_cancel.lock().await;
+                let _ = g.kill().await;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+
+    let app_out = app.clone();
+    let task_out = task_id.clone();
+    let url_out = request.url.clone();
+    let tail_out = stderr_tail.clone();
+    let emit_out = last_emit.clone();
+    let stdout_task = tokio::spawn(async move {
+        let Some(stdout) = stdout_taken.take() else {
+            return;
+        };
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        // 借用 app 发送事件需要 clone AppHandle
-        let app2 = app.clone();
-        let url2 = request.url.clone();
-        let tid = task_id.clone();
         while let Ok(Some(line)) = lines.next_line().await {
             if CANCEL.load(Ordering::SeqCst) {
-                let _ = child.kill().await;
-                let _ = app2.emit(
-                    "download-progress",
-                    DownloadProgress {
-                        task_id: tid.clone(),
-                        url: url2.clone(),
-                        status: "error".into(),
-                        percent: None,
-                        speed: None,
-                        eta: None,
-                        line: Some("已取消".into()),
-                    },
-                );
-                return Err("已取消下载".into());
+                break;
             }
             let line_t = line.trim().to_string();
             if line_t.is_empty() {
                 continue;
             }
-            let (pct, speed, eta) = if let Some(c) = re.captures(&line_t) {
-                (
-                    c.get(1).and_then(|m| m.as_str().parse().ok()),
-                    c.get(2).map(|m| m.as_str().to_string()),
-                    c.get(3).map(|m| m.as_str().to_string()),
-                )
-            } else if let Some(c) = re_simple.captures(&line_t) {
-                (c.get(1).and_then(|m| m.as_str().parse().ok()), None, None)
-            } else {
-                (None, None, None)
-            };
-            // 只转发有意义的行，避免刷屏：进度行 + 关键行
-            let interesting = pct.is_some()
-                || line_t.contains("[Merger]")
-                || line_t.contains("[ExtractAudio]")
-                || line_t.contains("Destination:")
-                || line_t.to_lowercase().contains("error");
-            if interesting {
-                let _ = app.emit(
-                    "download-progress",
-                    DownloadProgress {
-                        task_id: task_id.clone(),
-                        url: request.url.clone(),
-                        status: "progress".into(),
-                        percent: pct,
-                        speed,
-                        eta,
-                        line: Some(line_t.clone()),
-                    },
-                );
+            // stdout 的非进度行也可能是关键信息，同样收集到 tail 便于诊断
+            {
+                let mut tail = tail_out.lock().unwrap();
+                if tail.len() >= 30 {
+                    tail.pop_front();
+                }
+                tail.push_back(line_t.clone());
             }
+            let (pct, speed, eta) = parse_progress(&line_t);
+            if !is_interesting(&line_t, pct) {
+                continue;
+            }
+            // 节流：纯进度行 250ms 最多一次，关键行立即推
+            if pct.is_some() {
+                let mut last = emit_out.lock().unwrap();
+                if last.elapsed() < Duration::from_millis(250) && pct.unwrap_or(0.0) < 100.0 {
+                    continue;
+                }
+                *last = Instant::now();
+            }
+            let _ = app_out.emit(
+                "download-progress",
+                DownloadProgress {
+                    task_id: task_out.clone(),
+                    url: url_out.clone(),
+                    status: "progress".into(),
+                    percent: pct,
+                    speed,
+                    eta,
+                    line: Some(line_t),
+                },
+            );
         }
+    });
+
+    let app_err = app.clone();
+    let task_err = task_id.clone();
+    let url_err = request.url.clone();
+    let tail_err = stderr_tail.clone();
+    let emit_err = last_emit.clone();
+    let stderr_task = tokio::spawn(async move {
+        let Some(stderr) = stderr_taken.take() else {
+            return;
+        };
+        let reader = BufReader::new(stderr);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if CANCEL.load(Ordering::SeqCst) {
+                break;
+            }
+            let line_t = line.trim().to_string();
+            if line_t.is_empty() {
+                continue;
+            }
+            {
+                let mut tail = tail_err.lock().unwrap();
+                if tail.len() >= 30 {
+                    tail.pop_front();
+                }
+                tail.push_back(line_t.clone());
+            }
+            let (pct, speed, eta) = parse_progress(&line_t);
+            if !is_interesting(&line_t, pct) {
+                continue;
+            }
+            if pct.is_some() {
+                let mut last = emit_err.lock().unwrap();
+                if last.elapsed() < Duration::from_millis(250) && pct.unwrap_or(0.0) < 100.0 {
+                    continue;
+                }
+                *last = Instant::now();
+            }
+            let _ = app_err.emit(
+                "download-progress",
+                DownloadProgress {
+                    task_id: task_err.clone(),
+                    url: url_err.clone(),
+                    status: "progress".into(),
+                    percent: pct,
+                    speed,
+                    eta,
+                    line: Some(line_t),
+                },
+            );
+        }
+    });
+
+    let _ = tokio::join!(stdout_task, stderr_task);
+    // 读写任务结束后再回收 watcher
+    cancel_watcher.abort();
+
+    // 被取消：直接返回，不再 wait 残留进程
+    if CANCEL.load(Ordering::SeqCst) {
+        // 确保进程已退出
+        {
+            let mut g = child.lock().await;
+            let _ = g.kill().await;
+        }
+        let _ = app.emit(
+            "download-progress",
+            DownloadProgress {
+                task_id: task_id.clone(),
+                url: request.url.clone(),
+                status: "error".into(),
+                percent: None,
+                speed: None,
+                eta: None,
+                line: Some("已取消".into()),
+            },
+        );
+        return Err("已取消下载".into());
     }
 
-    let status = child.wait().await.map_err(|e| e.to_string())?;
-    // stderr 兜底错误信息
+    let status = {
+        let mut g = child.lock().await;
+        g.wait().await.map_err(|e| e.to_string())?
+    };
     if status.success() {
         emit(DownloadProgress {
             task_id: task_id.clone(),
@@ -242,6 +379,20 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
         });
         Ok("ok".into())
     } else {
+        let tail: String = {
+            let t = stderr_tail.lock().unwrap();
+            t.iter().cloned().collect::<Vec<_>>().join(" | ")
+        };
+        let tail_short: String = tail.chars().take(800).collect();
+        let msg = if tail_short.trim().is_empty() {
+            format!("yt-dlp 退出码: {}", status.code().unwrap_or(-1))
+        } else {
+            format!(
+                "yt-dlp 退出码: {}，{}",
+                status.code().unwrap_or(-1),
+                tail_short
+            )
+        };
         emit(DownloadProgress {
             task_id: task_id.clone(),
             url: request.url.clone(),
@@ -249,11 +400,8 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             percent: None,
             speed: None,
             eta: None,
-            line: Some(format!("yt-dlp 退出码: {}", status.code().unwrap_or(-1))),
+            line: Some(msg.clone()),
         });
-        Err(format!("yt-dlp 退出码: {}", status.code().unwrap_or(-1)))
+        Err(msg)
     }
 }
-
-#[allow(dead_code)]
-pub fn _keep_arc(_: Arc<()>) {}

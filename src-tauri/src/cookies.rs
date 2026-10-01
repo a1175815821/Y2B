@@ -141,25 +141,27 @@ pub fn cookie_set_default(app: AppHandle, name: Option<String>) -> Result<(), St
 /// 轻量校验：用该 cookie 请求一条视频的 --dump-json（只取标题），成功即有效
 #[tauri::command]
 pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, String> {
-    use crate::ytdlp::locate_ytdlp;
+    use crate::ytdlp::{hide_tokio, locate_ytdlp};
     let cookie = cookie_file_for(&app, &name)?;
     if !cookie.is_file() {
         return Err("Cookie 文件不存在".into());
     }
     let (bin, _) = locate_ytdlp(&app);
     let bin = bin.ok_or("yt-dlp 未就绪，请先下载内置 yt-dlp")?;
-    let out = tokio::process::Command::new(&bin)
-        .args([
-            "--cookies",
-            &cookie.to_string_lossy(),
-            "--dump-json",
-            "--no-playlist",
-            "--socket-timeout",
-            "15",
-            "https://www.youtube.com/watch?v=BaW_jenozKc",
-        ])
-        .output()
+    let mut cmd = tokio::process::Command::new(&bin);
+    hide_tokio(&mut cmd);
+    cmd.args([
+        "--cookies",
+        &cookie.to_string_lossy(),
+        "--dump-json",
+        "--no-playlist",
+        "--socket-timeout",
+        "15",
+        "https://www.youtube.com/watch?v=BaW_jenozKc",
+    ]);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(45), cmd.output())
         .await
+        .map_err(|_| "校验超时（45秒），请检查网络/代理后重试".to_string())?
         .map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(format!("Cookie {name} 校验通过（可正常访问 YouTube）"))

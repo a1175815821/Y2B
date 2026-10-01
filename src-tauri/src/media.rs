@@ -8,7 +8,7 @@ use tauri::AppHandle;
 
 use crate::cookies::cookie_file_for;
 use crate::settings::get_settings;
-use crate::ytdlp::locate_ytdlp;
+use crate::ytdlp::{hide_tokio, locate_ytdlp};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedMedia {
@@ -82,6 +82,7 @@ pub async fn resolve_url(
 
     let settings = get_settings(app.clone()).unwrap_or_default();
     let mut cmd = tokio::process::Command::new(&bin);
+    hide_tokio(&mut cmd);
     cmd.args([
         "--dump-single-json",
         "--flat-playlist",
@@ -105,7 +106,11 @@ pub async fn resolve_url(
     }
     cmd.arg(&url);
 
-    let out = cmd.output().await.map_err(|e| e.to_string())?;
+    // 总超时兜底：socket-timeout 只管单连接，整命令卡住时前端不再无限转圈
+    let out = tokio::time::timeout(std::time::Duration::from_secs(90), cmd.output())
+        .await
+        .map_err(|_| "解析超时（90秒），请检查网络/代理后重试".to_string())?
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "解析失败：{}",
@@ -205,6 +210,7 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
     let bin = bin.ok_or("yt-dlp 未就绪")?;
     let settings = get_settings(app.clone()).unwrap_or_default();
     let mut cmd = tokio::process::Command::new(&bin);
+    hide_tokio(&mut cmd);
     cmd.args(["-J", "--no-playlist", "--no-warnings", "--socket-timeout", "20"]);
     if let Some(ref prof) = settings.default_cookie_profile {
         if let Ok(p) = cookie_file_for(&app, prof) {
@@ -219,7 +225,10 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
         }
     }
     cmd.arg(&url);
-    let out = cmd.output().await.map_err(|e| e.to_string())?;
+    let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+        .await
+        .map_err(|_| "获取格式超时（60秒），请重试".to_string())?
+        .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
             "获取格式失败：{}",

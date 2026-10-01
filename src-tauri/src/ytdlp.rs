@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+/// Windows 下隐藏子进程控制台窗口，防止频繁弹出 CMD。
+/// 非 Windows 平台为空实现。
+#[cfg(windows)]
+pub fn hide_std(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+}
+#[cfg(not(windows))]
+pub fn hide_std(_cmd: &mut std::process::Command) {}
+
+#[cfg(windows)]
+pub fn hide_tokio(cmd: &mut tokio::process::Command) {
+    cmd.creation_flags(0x08000000);
+}
+#[cfg(not(windows))]
+pub fn hide_tokio(_cmd: &mut tokio::process::Command) {}
+
 pub const YTDLP_WIN_ASSET: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 const YTDLP_API_LATEST: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
@@ -68,10 +85,9 @@ pub fn locate_ytdlp(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
     }
     // 3. 系统 PATH
     for name in ["yt-dlp.exe", "yt-dlp"] {
-        if let Ok(out) = std::process::Command::new("where")
-            .arg(name)
-            .output()
-        {
+        let mut where_cmd = std::process::Command::new("where");
+        hide_std(&mut where_cmd);
+        if let Ok(out) = where_cmd.arg(name).output() {
             if out.status.success() {
                 let first = String::from_utf8_lossy(&out.stdout)
                     .lines()
@@ -88,10 +104,14 @@ pub fn locate_ytdlp(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
     (None, "missing")
 }
 
-fn bin_version(path: &std::path::Path) -> Option<String> {
-    let out = std::process::Command::new(path)
-        .arg("--version")
-        .output()
+async fn bin_version(path: &std::path::Path) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(path);
+    hide_tokio(&mut cmd);
+    cmd.arg("--version");
+    // yt-dlp --version 本地执行，10 秒足够，超时直接视为未就绪，避免卡住 UI
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output())
+        .await
+        .ok()?
         .ok()?;
     if !out.status.success() {
         return None;
@@ -105,11 +125,11 @@ fn bin_version(path: &std::path::Path) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn ytdlp_status(app: AppHandle) -> YtdlpStatus {
+pub async fn ytdlp_status(app: AppHandle) -> YtdlpStatus {
     let (path, source) = locate_ytdlp(&app);
     match path {
         Some(p) => {
-            let v = bin_version(&p);
+            let v = bin_version(&p).await;
             YtdlpStatus {
                 path: Some(p.to_string_lossy().to_string()),
                 version: v.clone(),
@@ -152,7 +172,7 @@ async fn download_to(url: &str, dest: &PathBuf) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn ensure_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
-    let st = ytdlp_status(app.clone());
+    let st = ytdlp_status(app.clone()).await;
     if st.ready {
         return Ok(st);
     }
@@ -162,7 +182,7 @@ pub async fn ensure_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
         .map_err(|e| e.to_string())?;
     let dest = data.join("bin").join("yt-dlp.exe");
     download_to(YTDLP_WIN_ASSET, &dest).await?;
-    Ok(ytdlp_status(app))
+    Ok(ytdlp_status(app).await)
 }
 
 async fn fetch_latest_release() -> Result<GithubRelease, String> {
@@ -186,7 +206,7 @@ async fn fetch_latest_release() -> Result<GithubRelease, String> {
 
 #[tauri::command]
 pub async fn check_ytdlp_update(app: AppHandle) -> Result<YtdlpUpdateInfo, String> {
-    let st = ytdlp_status(app);
+    let st = ytdlp_status(app).await;
     let rel = fetch_latest_release().await?;
     let latest = rel.tag_name.trim().to_string();
     let need = match &st.version {
@@ -219,11 +239,11 @@ pub async fn update_ytdlp(app: AppHandle) -> Result<YtdlpStatus, String> {
     let tmp = dest.with_extension("exe.new");
     download_to(YTDLP_WIN_ASSET, &tmp).await?;
     // 简单校验：能跑出 --version 才替换
-    let v = bin_version(&tmp).ok_or("新版本校验失败（无法运行）")?;
+    let v = bin_version(&tmp).await.ok_or("新版本校验失败（无法运行）")?;
     let _ = std::fs::remove_file(&dest);
     std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
     let _ = v;
-    Ok(ytdlp_status(app))
+    Ok(ytdlp_status(app).await)
 }
 
 // ---------------- ffmpeg ----------------
@@ -259,13 +279,17 @@ fn locate_ffmpeg(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
             return (Some(p), "downloaded");
         }
     }
-    if std::process::Command::new("where")
-        .arg("ffmpeg.exe")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
     {
-        return (Some(PathBuf::from("ffmpeg.exe")), "system");
+        let mut where_cmd = std::process::Command::new("where");
+        hide_std(&mut where_cmd);
+        if where_cmd
+            .arg("ffmpeg.exe")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return (Some(PathBuf::from("ffmpeg.exe")), "system");
+        }
     }
     (None, "missing")
 }
