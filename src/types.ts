@@ -37,6 +37,13 @@ export interface YtdlpUpdateInfo {
   published_at: string | null;
 }
 
+export interface FfmpegStatus {
+  path: string | null;
+  ready: boolean;
+  /** bundled | downloaded | system | missing */
+  source: string;
+}
+
 export interface ResolvedMedia {
   kind: "video" | "playlist" | "channel";
   id: string | null;

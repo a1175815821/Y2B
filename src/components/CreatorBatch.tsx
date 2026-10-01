@@ -2,16 +2,26 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { TAURI_COMMANDS, AppSettings, ResolvedMedia, VideoEntry, DownloadProgress, FORMAT_PRESETS } from "../types";
+import {
+  TAURI_COMMANDS,
+  AppSettings,
+  ResolvedMedia,
+  VideoEntry,
+  DownloadProgress,
+  FORMAT_PRESETS,
+} from "../types";
+import { IconCollection, IconFolder, IconPlay, IconSearch, IconCheck } from "./icons";
 
 export default function CreatorBatch({ settings }: { settings: AppSettings | null }) {
   const [channelUrl, setChannelUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [media, setMedia] = useState<ResolvedMedia | null>(null);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [q, setQ] = useState("");
   const [preset, setPreset] = useState("best720");
   const [outDir, setOutDir] = useState("");
   const [running, setRunning] = useState(false);
+  const [done, setDone] = useState(0);
   const [log, setLog] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -19,16 +29,24 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
 
   const scan = async () => {
     if (!channelUrl.trim()) return;
-    setScanning(true); setMsg(null);
+    setScanning(true);
+    setMsg(null);
     try {
-      const r = await invoke<ResolvedMedia>(TAURI_COMMANDS.resolveUrl, { url: channelUrl.trim(), maxEntries: 100 });
+      const r = await invoke<ResolvedMedia>(TAURI_COMMANDS.resolveUrl, {
+        url: channelUrl.trim(),
+        maxEntries: 100,
+      });
       setMedia(r);
       const init: Record<string, boolean> = {};
       for (const e of r.entries_preview) init[e.id] = true;
       setChecked(init);
+      setDone(0);
       pushLog(`扫描到 ${r.video_count ?? r.entries_preview.length} 个视频（显示前 ${r.entries_preview.length} 条）`);
-    } catch (e) { setMsg(`扫描失败：${String(e)}`); }
-    finally { setScanning(false); }
+    } catch (e) {
+      setMsg(`扫描失败：${String(e)}`);
+    } finally {
+      setScanning(false);
+    }
   };
 
   const toggle = (id: string) => setChecked((p) => ({ ...p, [id]: !p[id] }));
@@ -43,12 +61,21 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     if (typeof dir === "string") setOutDir(dir);
   };
 
+  const query = q.trim().toLowerCase();
+  const visible = (media?.entries_preview ?? []).filter((e) =>
+    query ? (e.title ?? "").toLowerCase().includes(query) : true
+  );
   const selected: VideoEntry[] = (media?.entries_preview ?? []).filter((e) => checked[e.id]);
 
   const batchDownload = async () => {
     const dir = (outDir || settings?.out_dir || "").trim();
-    if (selected.length === 0 || !dir) { setMsg("请先勾选视频并选择输出目录"); return; }
-    setRunning(true); setMsg(null);
+    if (selected.length === 0 || !dir) {
+      setMsg("请先勾选视频并选择输出目录");
+      return;
+    }
+    setRunning(true);
+    setMsg(null);
+    setDone(0);
     const unlisten = await listen<DownloadProgress>("download-progress", (ev) => {
       if (ev.payload.line) pushLog(`[${ev.payload.task_id}] ${ev.payload.line}`);
     });
@@ -59,7 +86,9 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
         try {
           await invoke(TAURI_COMMANDS.startDownload, {
             request: {
-              url: v.url, format_selector: preset, out_dir: dir,
+              url: v.url,
+              format_selector: preset,
+              out_dir: dir,
               cookie_profile: settings?.default_cookie_profile ?? null,
               concurrent_fragments: settings?.concurrent_fragments ?? 4,
               proxy: settings?.proxy ?? null,
@@ -68,65 +97,153 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
             },
           });
           pushLog(`(${i + 1}/${selected.length}) 完成`);
-        } catch (e) { pushLog(`(${i + 1}/${selected.length}) 失败：${String(e)}`); }
+        } catch (e) {
+          pushLog(`(${i + 1}/${selected.length}) 失败：${String(e)}`);
+        }
+        setDone(i + 1);
       }
-    } finally { unlisten(); setRunning(false); }
+    } finally {
+      unlisten();
+      setRunning(false);
+    }
   };
 
   return (
     <div>
+      <div className="page-head">
+        <h1>创作者批量</h1>
+        <p>输入频道 / @handle / 播放列表主页，扫描视频列表后勾选批量下载。</p>
+      </div>
+
       <div className="card">
-        <h2 className="card-title">扫描创作者主页</h2>
-        <p className="card-desc">输入频道 @handle、channel 链接或播放列表地址，列出全部视频供勾选。</p>
+        <div className="card-head">
+          <div className="t-ico">
+            <IconCollection size={17} />
+          </div>
+          <div>
+            <h3>扫描创作者主页</h3>
+            <p>yt-dlp --flat-playlist 快速列出视频（默认前 100 条）</p>
+          </div>
+        </div>
         <div className="row">
-          <input type="text" placeholder="https://www.youtube.com/@handle" value={channelUrl} onChange={(e) => setChannelUrl(e.target.value)} />
-          <button className="btn" onClick={scan} disabled={scanning}>{scanning ? "扫描中…" : "扫描列表"}</button>
+          <div className="field grow">
+            <input
+              className="input"
+              placeholder="https://www.youtube.com/@handle　/　/channel/…　/　/playlist?list=…"
+              value={channelUrl}
+              onChange={(e) => setChannelUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && scan()}
+            />
+          </div>
+          <button className="btn btn-primary" onClick={scan} disabled={scanning}>
+            <IconSearch size={15} />
+            {scanning ? "扫描中…" : "扫描视频列表"}
+          </button>
         </div>
         {media && (
-          <div className="row" style={{ marginTop: 14 }}>
-            <span className="pill ok">{media.kind}</span>
-            <span style={{ fontWeight: 600 }}>{media.title}</span>
-            <span className="muted">共 {media.video_count ?? media.entries_preview.length} 个{media.truncated ? "（仅显示前 100 条）" : ""}</span>
+          <div className="panel-soft mt16">
+            <div className="media-hero">
+              {media.thumbnail && <img src={media.thumbnail} alt="" />}
+              <div className="grow">
+                <div className="t">{media.title}</div>
+                <div className="m">
+                  {media.uploader ?? ""} · 共 {media.video_count ?? media.entries_preview.length} 个
+                  {media.truncated ? "（仅显示前 100 条）" : ""}
+                </div>
+                <div className="stat-row">
+                  <div className="stat">
+                    <div className="k">扫描到</div>
+                    <div className="v">{media.entries_preview.length}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="k">已勾选</div>
+                    <div className="v">{selected.length}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="k">已完成</div>
+                    <div className="v">
+                      {done}/{selected.length}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>
 
       {media && (
         <div className="card">
-          <h2 className="card-title">勾选视频 <span className="pill">{selected.length}/{media.entries_preview.length}</span></h2>
-          <div className="row">
-            <button className="btn btn-ghost btn-sm" onClick={() => all(true)}>全选</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => all(false)}>全不选</button>
-            <span className="spacer" />
-            <select value={preset} onChange={(e) => setPreset(e.target.value)} style={{ maxWidth: 200 }}>
-              {FORMAT_PRESETS.filter((p) => p.value !== "manual").map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-            </select>
+          <div className="card-head">
+            <div className="t-ico">
+              <IconCheck size={17} />
+            </div>
+            <div>
+              <h3>
+                勾选视频 <span className="pill info" style={{ marginLeft: 6 }}>{selected.length}/{media.entries_preview.length}</span>
+              </h3>
+              <p>点击整行即可勾选 / 取消</p>
+            </div>
+            <div style={{ marginLeft: "auto" }} className="row">
+              <input
+                className="input"
+                style={{ width: 170, height: 34 }}
+                placeholder="筛选标题…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+              <button className="btn btn-ghost btn-sm" onClick={() => all(true)}>全选</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => all(false)}>全不选</button>
+            </div>
           </div>
-          <div className="row">
-            <input type="text" placeholder="输出目录" value={outDir || settings?.out_dir || ""} onChange={(e) => setOutDir(e.target.value)} />
-            <button className="btn btn-ghost" onClick={pickDir}>浏览…</button>
-            <button className="btn btn-success" onClick={batchDownload} disabled={running}>{running ? "下载中…" : `批量下载 (${selected.length})`}</button>
-          </div>
+
           <div className="vlist">
-            {media.entries_preview.map((v) => (
+            {visible.map((v) => (
               <label key={v.id} className="vitem">
-                <input type="checkbox" checked={!!checked[v.id]} onChange={() => toggle(v.id)} />
+                <input type="checkbox" className="check" checked={!!checked[v.id]} onChange={() => toggle(v.id)} />
                 {v.thumbnail && <img src={v.thumbnail} alt="" />}
-                <div>
+                <div className="grow">
                   <div className="t">{v.title}</div>
-                  <div className="muted">
+                  <div className="s">
                     {v.duration != null ? `${Math.round(v.duration / 60)} 分钟 · ` : ""}
-                    {v.upload_date ?? ""}{v.view_count != null ? ` · ${v.view_count} 播放` : ""}
+                    {v.upload_date ?? ""} {v.view_count != null ? `· ${v.view_count} 播放` : ""}
                   </div>
                 </div>
               </label>
             ))}
+            {visible.length === 0 && <div className="empty">没有匹配的视频，换个关键词试试。</div>}
+          </div>
+
+          <div className="actionbar">
+            <select className="select" value={preset} onChange={(e) => setPreset(e.target.value)} style={{ width: 210 }}>
+              {FORMAT_PRESETS.filter((p) => p.value !== "manual").map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <input
+              className="input grow"
+              placeholder="输出目录"
+              value={outDir || settings?.out_dir || ""}
+              onChange={(e) => setOutDir(e.target.value)}
+            />
+            <button className="btn btn-ghost" onClick={pickDir}>
+              <IconFolder size={15} />
+              选择…
+            </button>
+            <button className="btn btn-primary" onClick={batchDownload} disabled={running}>
+              <IconPlay size={15} />
+              {running ? `下载中 ${done}/${selected.length}…` : `批量下载 (${selected.length})`}
+            </button>
           </div>
         </div>
       )}
 
-      {msg && <div className="alert alert-error">{msg}</div>}
-      {log.length > 0 && <div className="log">{log.join("\n")}</div>}
+      {msg && (
+        <div className="callout error">{msg}</div>
+      )}
+      {log.length > 0 && <div className="log mt16">{log.join("\n")}</div>}
     </div>
   );
 }
