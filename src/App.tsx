@@ -158,7 +158,7 @@ export default function App() {
           </span>
           <div className="right">
             <span className="stat-item">{settings?.out_dir ?? "未设置输出目录"}</span>
-            <span className="stat-item">Y2B v0.1.0</span>
+            <span className="stat-item">Y2B v0.2.1</span>
           </div>
         </footer>
       </div>

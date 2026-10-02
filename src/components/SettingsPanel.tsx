@@ -457,12 +457,14 @@ function CheckAppUpdateButton({
   proxy: string | null;
 }) {
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
   return (
     <button
       className="btn btn-ghost btn-sm"
       disabled={busy}
       onClick={async () => {
         setBusy(true);
+        setPhase("检查中…");
         try {
           const { check } = await import("@tauri-apps/plugin-updater");
           // 设置页代理同样用于更新检查，解决公司网/代理用户永远检查失败的问题
@@ -472,8 +474,27 @@ function CheckAppUpdateButton({
           if (!u) {
             say("success", "应用已是最新。");
           } else {
-            say("info", `发现新版本 ${u.version}，开始下载安装…`);
-            await u.downloadAndInstall();
+            say("info", `发现新版本 ${u.version}（当前 ${u.currentVersion}），开始下载更新包…`);
+            let done = 0;
+            let total = 0;
+            let lastShown = -1;
+            await u.downloadAndInstall((ev) => {
+              if (ev.event === "Started") {
+                total = ev.data.contentLength ?? 0;
+                setPhase("下载中 0%");
+              } else if (ev.event === "Progress") {
+                done += ev.data.chunkLength;
+                // 节流：整数百分比变化才刷新，避免每秒几十次渲染
+                const pct = total > 0 ? Math.floor((done / total) * 100) : -1;
+                if (pct !== lastShown && pct >= 0) {
+                  lastShown = pct;
+                  setPhase(`下载中 ${pct}%`);
+                }
+              } else if (ev.event === "Finished") {
+                setPhase("安装中…");
+                say("info", "下载完成，正在安装（若弹出 SmartScreen 请点“更多信息 → 仍要运行”）…");
+              }
+            });
             const { relaunch } = await import("@tauri-apps/plugin-process");
             await relaunch();
           }
@@ -483,14 +504,15 @@ function CheckAppUpdateButton({
           if (msg.includes("YOUR_NAME") || msg.includes("pubkey") || msg.includes("url")) {
             say("info", "应用自更新尚未配置（需发版时填签名公钥与 latest.json 地址），不影响 yt-dlp 下载功能。");
           } else {
-            say("error", `应用更新检查失败：${msg}（公司网请先在下方设置代理）`);
+            say("error", `应用更新失败：${msg}（公司网请先在下方设置代理；若版本未变请手动到 Releases 页下载安装包覆盖安装）`);
           }
         } finally {
           setBusy(false);
+          setPhase(null);
         }
       }}
     >
-      {busy ? "检查中…" : "检查应用更新"}
+      {busy ? phase ?? "检查中…" : "检查应用更新"}
     </button>
   );
 }
