@@ -6,6 +6,10 @@ fn default_player_client() -> String {
     "auto".into()
 }
 
+fn default_po_auto() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub out_dir: Option<String>,
@@ -27,6 +31,9 @@ pub struct AppSettings {
     /// 为空则只用内置默认目录：%APPDATA%/com.y2b.downloader/yt-dlp-plugins
     #[serde(default)]
     pub youtube_plugin_dirs: Option<String>,
+    /// PO 服务就绪时 auto 自动按 mweb 跑（高清必需）；关掉则 auto 永远用 yt-dlp 默认
+    #[serde(default = "default_po_auto")]
+    pub youtube_po_auto: bool,
 }
 
 impl Default for AppSettings {
@@ -42,6 +49,7 @@ impl Default for AppSettings {
             youtube_player_client: default_player_client(),
             youtube_po_token: None,
             youtube_plugin_dirs: None,
+            youtube_po_auto: default_po_auto(),
         }
     }
 }

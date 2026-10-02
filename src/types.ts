@@ -21,6 +21,8 @@ export const TAURI_COMMANDS = {
   historyClear: "history_clear",
   openInFolder: "open_in_folder",
   potStatus: "pot_status",
+  potEnsure: "pot_ensure",
+  potStop: "pot_stop",
 } as const;
 
 // ---------- yt-dlp 类型 ----------
@@ -145,6 +147,8 @@ export interface AppSettings {
   youtube_po_token: string | null;
   /** 自定义插件目录，为空则只用默认目录 */
   youtube_plugin_dirs: string | null;
+  /** PO 服务就绪时 auto 自动按 mweb 跑 */
+  youtube_po_auto: boolean;
 }
 
 export interface PotStatus {
@@ -152,6 +156,10 @@ export interface PotStatus {
   plugin_files: string[];
   has_plugin: boolean;
   extractor_args_preview: string[];
+  stack_installed: boolean;
+  server_running: boolean;
+  server_version: string | null;
+  effective_client: string;
 }
 
 /** 老 settings.json 缺新字段时的迁移兜底（后端 serde 也有 default，双保险） */
@@ -167,6 +175,7 @@ export function withSettingsDefaults(s: Partial<AppSettings>): AppSettings {
     youtube_player_client: s.youtube_player_client ?? "auto",
     youtube_po_token: s.youtube_po_token ?? null,
     youtube_plugin_dirs: s.youtube_plugin_dirs ?? null,
+    youtube_po_auto: s.youtube_po_auto ?? true,
   };
 }
 

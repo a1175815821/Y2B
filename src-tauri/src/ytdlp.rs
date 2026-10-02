@@ -391,11 +391,32 @@ fn normalized_client(raw: &str) -> Option<String> {
     }
 }
 
-/// 构造 --extractor-args 参数值列表，如
-/// ["youtube:player_client=mweb", "youtube:po_token=mweb.gvs+XXX"]
-pub fn youtube_extractor_args(settings: &crate::settings::AppSettings) -> Vec<String> {
-    let mut out = Vec::new();
+/// 生效的 player_client：用户显式选择优先；auto + 允许自动 + 本地 PO 栈可用 → mweb
+/// （mweb 高清强制要 GVS Token，没有本地栈时传 mweb 只会全 403，所以要门控）。
+pub fn effective_player_client(
+    app: &AppHandle,
+    settings: &crate::settings::AppSettings,
+) -> Option<String> {
     if let Some(c) = normalized_client(&settings.youtube_player_client) {
+        return Some(c);
+    }
+    if settings.youtube_po_auto && crate::pot::stack_usable(app) {
+        return Some("mweb".into());
+    }
+    None
+}
+
+/// 构造 --extractor-args 参数值列表，如
+/// ["youtube:player_client=mweb", "youtube:po_token=mweb.gvs+XXX",
+///  "youtubepot-bgutilscript:server_home=C:/.../server"]
+/// 纯函数版本（可单测）：stack 门控与 server_home 由调用方传入。
+pub fn youtube_extractor_args_for(
+    settings: &crate::settings::AppSettings,
+    effective_client: Option<&str>,
+    script_home: Option<&str>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(c) = effective_client {
         out.push(format!("youtube:player_client={c}"));
     }
     if let Some(tok) = settings
@@ -411,7 +432,23 @@ pub fn youtube_extractor_args(settings: &crate::settings::AppSettings) -> Vec<St
             out.push(format!("youtube:po_token={tok}"));
         }
     }
+    // 脚本兜底：HTTP 服务不可用时插件自动降级走 node 直调（已实测跑通），
+    // HTTP 可用时该参数无副作用（HTTP 优先）。
+    if let Some(h) = script_home {
+        out.push(format!("youtubepot-bgutilscript:server_home={h}"));
+    }
     out
+}
+
+/// 供调用方使用的版本：自动计算生效客户端与脚本目录
+pub fn youtube_extractor_args(
+    app: &AppHandle,
+    settings: &crate::settings::AppSettings,
+) -> Vec<String> {
+    let client = effective_player_client(app, settings);
+    let home = crate::pot::script_home_usable(app)
+        .map(|p| p.to_string_lossy().replace('\\', "/"));
+    youtube_extractor_args_for(settings, client.as_deref(), home.as_deref())
 }
 
 /// 收集插件目录：默认目录 + 自定义目录（存在的才传，去重）。
@@ -449,7 +486,13 @@ pub fn apply_youtube_options(
     for d in youtube_plugin_dirs(app, settings) {
         cmd.arg("--plugin-dirs").arg(d);
     }
-    for a in youtube_extractor_args(settings) {
+    // 内置 portable node：provider 脚本与 [jsc] 挑战都走它，不依赖用户装 node/deno
+    let node = crate::pot::node_exe(app);
+    if node.is_file() {
+        cmd.arg("--js-runtimes")
+            .arg(format!("node:{}", node.to_string_lossy()));
+    }
+    for a in youtube_extractor_args(app, settings) {
         cmd.arg("--extractor-args").arg(a);
     }
 }
@@ -460,10 +503,17 @@ pub struct PotStatus {
     pub plugin_files: Vec<String>,
     pub has_plugin: bool,
     pub extractor_args_preview: Vec<String>,
+    /// 本地 PO 服务栈（三件套）是否就绪
+    pub stack_installed: bool,
+    /// HTTP 服务（127.0.0.1:4416）是否可达
+    pub server_running: bool,
+    pub server_version: Option<String>,
+    /// 实际生效的客户端（auto 经门控解析后）
+    pub effective_client: String,
 }
 
-/// 前端设置页展示用：默认插件目录 + 目录内容 + 当前 extractor-args 预览。
-/// 只读本地目录，不跑网络，调用廉价。
+/// 前端设置页展示用：默认插件目录 + 目录内容 + 当前 extractor-args 预览 + 服务栈状态。
+/// 附带一次 2 秒 /ping 快检，调用仍廉价。
 #[tauri::command]
 pub async fn pot_status(app: AppHandle) -> PotStatus {
     let settings = crate::settings::get_settings(app.clone()).unwrap_or_default();
@@ -507,12 +557,16 @@ pub async fn pot_status(app: AppHandle) -> PotStatus {
             }
         }
     }
-    let extractor_args_preview = youtube_extractor_args(&settings);
+    let stack = crate::pot::stack_status(&app).await;
     PotStatus {
         plugin_dir: dir.to_string_lossy().to_string(),
         plugin_files: files,
         has_plugin,
-        extractor_args_preview,
+        extractor_args_preview: youtube_extractor_args(&app, &settings),
+        stack_installed: stack.installed,
+        server_running: stack.server_running,
+        server_version: stack.server_version,
+        effective_client: stack.effective_client,
     }
 }
 
@@ -526,10 +580,10 @@ mod tests {
         let mut s = AppSettings::default();
         s.youtube_player_client = "auto".into();
         s.youtube_po_token = None;
-        assert!(youtube_extractor_args(&s).is_empty());
+        assert!(youtube_extractor_args_for(&s, None, None).is_empty());
         // 空字符串同样视为 auto
         s.youtube_player_client = "  ".into();
-        assert!(youtube_extractor_args(&s).is_empty());
+        assert!(youtube_extractor_args_for(&s, None, None).is_empty());
     }
 
     #[test]
@@ -538,7 +592,7 @@ mod tests {
         s.youtube_player_client = "mweb".into();
         s.youtube_po_token = Some("mweb.gvs+XXX".into());
         assert_eq!(
-            youtube_extractor_args(&s),
+            youtube_extractor_args_for(&s, Some("mweb"), None),
             vec![
                 "youtube:player_client=mweb".to_string(),
                 "youtube:po_token=mweb.gvs+XXX".to_string(),
@@ -552,8 +606,20 @@ mod tests {
         s.youtube_player_client = "auto".into();
         s.youtube_po_token = Some("youtube:po_token=web_creator.gvs+YYY".into());
         assert_eq!(
-            youtube_extractor_args(&s),
+            youtube_extractor_args_for(&s, None, None),
             vec!["youtube:po_token=web_creator.gvs+YYY".to_string()]
+        );
+    }
+
+    #[test]
+    fn script_home_fallback_appended() {
+        let s = AppSettings::default();
+        assert_eq!(
+            youtube_extractor_args_for(&s, Some("mweb"), Some("C:/x/server")),
+            vec![
+                "youtube:player_client=mweb".to_string(),
+                "youtubepot-bgutilscript:server_home=C:/x/server".to_string(),
+            ]
         );
     }
 
@@ -564,7 +630,7 @@ mod tests {
         s.youtube_player_client = "default,mweb".into();
         s.youtube_po_token = None;
         assert_eq!(
-            youtube_extractor_args(&s),
+            youtube_extractor_args_for(&s, Some("default,mweb"), None),
             vec!["youtube:player_client=default,mweb".to_string()]
         );
     }

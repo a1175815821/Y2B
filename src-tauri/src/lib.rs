@@ -4,6 +4,7 @@ mod download;
 mod errhint;
 mod history;
 mod media;
+mod pot;
 mod settings;
 mod ytdlp;
 
@@ -27,6 +28,11 @@ pub fn run() {
                 // PO-Token Provider 插件目录（yt-dlp --plugin-dirs 指向这里）
                 let _ = std::fs::create_dir_all(dir.join("yt-dlp-plugins"));
             }
+            // PO 服务后台自启（三件套齐才起，缺件不静默下载）
+            let h = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                crate::pot::autostart(h).await;
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +43,8 @@ pub fn run() {
             ytdlp::ffmpeg_status,
             ytdlp::ensure_ffmpeg,
             ytdlp::pot_status,
+            pot::pot_ensure,
+            pot::pot_stop,
             media::resolve_url,
             media::list_formats,
             download::start_download,

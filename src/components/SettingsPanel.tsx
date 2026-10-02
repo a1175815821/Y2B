@@ -36,6 +36,7 @@ export default function SettingsPanel({
   );
   const [ffmpeg, setFfmpeg] = useState<FfmpegStatus | null>(null);
   const [pot, setPot] = useState<PotStatus | null>(null);
+  const [potBusy, setPotBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [msgKind, setMsgKind] = useState<"info" | "error" | "success">("info");
   const [update, setUpdate] = useState<YtdlpUpdateInfo | null>(null);
@@ -61,15 +62,59 @@ export default function SettingsPanel({
   const set = (k: keyof AppSettings, v: unknown) =>
     setForm((p) => (p ? { ...p, [k]: v } : p));
 
-  const save = async () => {
-    if (!form) return;
-    await invoke(TAURI_COMMANDS.saveSettings, { settings: form });
-    say("success", "下载偏好已保存（含 YouTube 客户端 / PO-Token 设置）。");
+  const refreshPot = async () => {
     try {
       setPot(await invoke<PotStatus>(TAURI_COMMANDS.potStatus));
     } catch {
       /* 忽略预览刷新失败 */
     }
+  };
+
+  const ensurePot = async () => {
+    setPotBusy(true);
+    say("info", "正在安装 PO 组件（约 60MB，一次性）并启动服务，请稍候…");
+    try {
+      await invoke(TAURI_COMMANDS.potEnsure, { refresh: false });
+      await refreshPot();
+      say("success", "PO 服务已就绪：高清/18+ 解析自动走 mweb。");
+    } catch (e) {
+      say("error", `PO 安装失败：${String(e)}`);
+    } finally {
+      setPotBusy(false);
+    }
+  };
+
+  const updatePot = async () => {
+    setPotBusy(true);
+    say("info", "正在更新 PO 组件到当前内置版本…");
+    try {
+      await invoke(TAURI_COMMANDS.potEnsure, { refresh: true });
+      await refreshPot();
+      say("success", "PO 组件已更新并启动。");
+    } catch (e) {
+      say("error", `PO 更新失败：${String(e)}`);
+    } finally {
+      setPotBusy(false);
+    }
+  };
+
+  const stopPot = async () => {
+    setPotBusy(true);
+    try {
+      await invoke(TAURI_COMMANDS.potStop);
+      await refreshPot();
+      say("info", "已停止 PO 服务（下载回退默认客户端）。");
+    } catch (e) {
+      say("error", `停止失败：${String(e)}`);
+    } finally {
+      setPotBusy(false);
+    }
+  };
+  const save = async () => {
+    if (!form) return;
+    await invoke(TAURI_COMMANDS.saveSettings, { settings: form });
+    say("success", "下载偏好已保存（含 YouTube 客户端 / PO-Token 设置）。");
+    await refreshPot();
     onChange();
   };
 
@@ -229,24 +274,54 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      {/* —— YouTube 年龄限制 / PO-Token —— */}
+      {/* —— YouTube 年龄限制 / PO 服务 —— */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-head">
           <div className="t-ico">
             <IconKey size={17} />
           </div>
           <div>
-            <h3>YouTube 年龄限制 / PO-Token</h3>
-            <p>18+ 视频只剩 360p / 403 时在这里绕过（yt-dlp #17542）</p>
+            <h3>YouTube 年龄限制 / PO 服务</h3>
+            <p>18+ / 高清 403？点一下装好本地服务即可（yt-dlp #17542）</p>
           </div>
           <span
-            className={`pill ${pot?.has_plugin ? "ok" : "warn"}`}
+            className={`pill ${pot?.server_running ? "ok" : pot?.stack_installed ? "info" : "warn"}`}
             style={{ marginLeft: "auto" }}
           >
-            {pot ? (pot.has_plugin ? "插件就绪" : "未装插件") : "检测中…"}
+            {pot
+              ? pot.server_running
+                ? `运行中${pot.server_version ? ` v${pot.server_version}` : ""}`
+                : pot.stack_installed
+                  ? "已安装未启动"
+                  : "未安装"
+              : "检测中…"}
           </span>
         </div>
-        <div className="grid2">
+        <div className="row mt12">
+          <button className="btn btn-primary btn-sm" onClick={ensurePot} disabled={potBusy}>
+            {potBusy ? "处理中…" : pot?.stack_installed ? "启动 PO 服务" : "一键安装并启动"}
+          </button>
+          {pot?.stack_installed && (
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={updatePot} disabled={potBusy}>
+                更新 PO 组件
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={stopPot} disabled={potBusy}>
+                停止服务
+              </button>
+            </>
+          )}
+        </div>
+        <label className="row mt12" style={{ gap: 8, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            className="check"
+            checked={form.youtube_po_auto ?? true}
+            onChange={(e) => set("youtube_po_auto", e.target.checked)}
+          />
+          <span className="hint">服务就绪时自动用 mweb 拿高清（推荐；服务异常时自动回退默认客户端）</span>
+        </label>
+        <div className="grid2 mt12">
           <div className="field">
             <span className="label">播放器客户端（player_client）</span>
             <select
@@ -254,16 +329,16 @@ export default function SettingsPanel({
               value={form.youtube_player_client ?? "auto"}
               onChange={(e) => set("youtube_player_client", e.target.value)}
             >
-              <option value="auto">auto（yt-dlp 默认，通用）</option>
-              <option value="mweb">mweb（18+ 推荐，需插件+Cookie）</option>
-              <option value="web_creator">web_creator（需登录 Cookie+插件）</option>
+              <option value="auto">auto（服务就绪时按 mweb，否则默认）</option>
+              <option value="mweb">mweb（强制，需 PO 服务+Cookie）</option>
+              <option value="web_creator">web_creator（需登录 Cookie+PO 服务）</option>
               <option value="tv">tv（免 PO，但登录态多为 DRM）</option>
               <option value="default,mweb">default,mweb（多客户端回退）</option>
               <option value="default,web_embedded">default,web_embedded（登录异常时备用）</option>
             </select>
           </div>
           <div className="field">
-            <span className="label">手动 PO-Token（可选，插件模式留空）</span>
+            <span className="label">手动 PO-Token（可选，服务模式留空）</span>
             <input
               className="input mono"
               placeholder="如 mweb.gvs+XXX（绑定单视频，一次一换）"
@@ -273,7 +348,7 @@ export default function SettingsPanel({
           </div>
         </div>
         <div className="field mt12">
-          <span className="label">自定义插件目录（可选）</span>
+          <span className="label">自定义插件目录（可选，高级）</span>
           <input
             className="input mono"
             placeholder={pot?.plugin_dir ?? "%APPDATA%/com.y2b.downloader/yt-dlp-plugins"}
@@ -281,17 +356,14 @@ export default function SettingsPanel({
             onChange={(e) => set("youtube_plugin_dirs", e.target.value || null)}
           />
         </div>
-        <KV k="默认插件目录" v={pot?.plugin_dir ?? "检测中…"} mono />
-        {pot && pot.plugin_files.length > 0 && (
-          <KV k="目录内容" v={pot.plugin_files.join("、")} mono />
-        )}
+        <KV k="生效客户端" v={pot?.effective_client ?? "检测中…"} mono />
         {pot && pot.extractor_args_preview.length > 0 && (
           <KV k="实际透传" v={pot.extractor_args_preview.join("  ")} mono />
         )}
         <div className="hint mt8">
-          步骤：① 把 bgutil-ytdlp-pot-provider（或 getpot-wpc）克隆到上方插件目录 → ② 客户端选
-          mweb → ③ Cookie 管理里导入已登录成人账号并设默认 → 保存后重解析。详见 yt-dlp
-          PO-Token-Guide。手动 Token 仅对单个视频有效，日常请用插件自动刷。
+          一键安装会下载 provider 插件（8KB）+ 预编译 PO 服务（约 27MB）+ Node portable
+          （约 30MB，一次性），随后开机自动拉起 127.0.0.1:4416 服务。18+ 视频仍需 Cookie
+          用已登录成人账号（Cookie 管理页导入并设默认）。
         </div>
       </div>
 

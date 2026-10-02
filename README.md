@@ -42,18 +42,20 @@ yt-dlp 与 App 双更新检查。
 3. **创作者批量**：「创作者批量」粘贴频道 / @handle / 播放列表链接 → 扫描 → 勾选 → 批量下载。
 4. **代理**：公司网用户在「设置」填 `http://127.0.0.1:7890`，更新检查同样走该代理。
 
-### 18+ 视频只剩 360p / 403？（yt-dlp #17542）
+### 18+ / 高清 403？点一下就行（yt-dlp #17542）
 
-这是 YouTube 的 PO-Token 验证：年龄限制视频的高清格式要求 GVS PO Token，
-三步绕过：
+这是 YouTube 的 PO-Token 验证：高清格式要求 GVS PO Token。
+Y2B 内置了一键方案：「设置 → YouTube 年龄限制 / PO 服务」点「一键安装并启动」，
+应用自动下载 provider 插件 + 预编译 PO 服务 + Node portable（共约 60MB，一次性），
+并在后台拉起 `127.0.0.1:4416` 服务。服务就绪后解析/下载自动走 `mweb` 拿高清；
+服务异常时自动回退默认客户端。18+ 视频仍需 Cookie 用**已登录成人账号**。
 
-1. 把 [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
-   （备用 [yt-dlp-getpot-wpc](https://github.com/coletdjnz/yt-dlp-getpot-wpc)）
-   克隆到「设置」页显示的插件目录（`%APPDATA%/com.y2b.downloader/yt-dlp-plugins`）；
-2. 「设置 → YouTube 年龄限制 / PO-Token」把客户端切到 `mweb`；
-3. Cookie 用**已登录成人账号**并设为默认 → 保存后重新解析。
+技术细节：PO Token 按视频 ID 绑定、数小时过期，由本地服务逐个现算；
+HTTP 服务不可用时自动降级走脚本直调（慢一些）。组件来源：
 
-插件模式下「手动 PO-Token」留空即可（Token 绑定单个视频 ID，插件会自动逐个刷）。
+- 插件 + 服务：[bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+ （GPL-3.0，预编译包附带 LICENSE）+ [BgUtils](https://github.com/LuanRT/BgUtils)
+- Node portable：https://nodejs.org（MIT）
 
 ## 从源码构建
 
