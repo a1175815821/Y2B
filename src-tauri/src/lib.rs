@@ -24,6 +24,8 @@ pub fn run() {
             if let Ok(dir) = app.path().app_data_dir() {
                 let _ = std::fs::create_dir_all(dir.join("bin"));
                 let _ = std::fs::create_dir_all(dir.join("cookies"));
+                // PO-Token Provider 插件目录（yt-dlp --plugin-dirs 指向这里）
+                let _ = std::fs::create_dir_all(dir.join("yt-dlp-plugins"));
             }
             Ok(())
         })
@@ -34,6 +36,7 @@ pub fn run() {
             ytdlp::update_ytdlp,
             ytdlp::ffmpeg_status,
             ytdlp::ensure_ffmpeg,
+            ytdlp::pot_status,
             media::resolve_url,
             media::list_formats,
             download::start_download,

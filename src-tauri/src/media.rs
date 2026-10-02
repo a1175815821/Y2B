@@ -102,6 +102,8 @@ async fn fetch_flat_json(
             cmd.arg("--proxy").arg(proxy.trim());
         }
     }
+    // PO-Token / player_client / plugin-dirs：18+ 高清必需，与下载链路保持一致
+    crate::ytdlp::apply_youtube_options(&mut cmd, app, &settings);
     cmd.arg(url);
 
     // 总超时兜底：socket-timeout 只管单连接，整命令卡住时前端不再无限转圈
@@ -375,6 +377,8 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
             cmd.arg("--proxy").arg(proxy.trim());
         }
     }
+    // PO-Token / player_client / plugin-dirs：列表与下载用同一套，避免解析有高清、下载却 403
+    crate::ytdlp::apply_youtube_options(&mut cmd, &app, &settings);
     cmd.arg(&url);
     let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
         .await

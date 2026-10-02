@@ -363,3 +363,209 @@ pub async fn ensure_ffmpeg(app: AppHandle) -> Result<FfmpegStatus, String> {
     }
     Ok(ffmpeg_status(app))
 }
+
+// ---------------- YouTube PO-Token / player_client ----------------
+//
+// 背景见 yt-dlp#17542 + PO-Token-Guide：年龄限制视频的 web_embedded /
+// tv_downgraded 直接 UNPLAYABLE，高清只剩 mweb / web_creator，而这两个
+// 需要 GVS PO Token（插件自动刷）。这里统一构造 --plugin-dirs 与
+// --extractor-args，解析/下载/校验三处调用共用。
+
+/// 默认插件目录：%APPDATA%/com.y2b.downloader/yt-dlp-plugins
+/// 把 bgutil-ytdlp-pot-provider 等插件仓库克隆到该目录下即可被加载。
+pub fn default_plugin_dir(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_data_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join("yt-dlp-plugins")
+}
+
+/// 归一化 player_client：auto/空 = 不传（用 yt-dlp 默认）。
+/// 注意 "default" 是 yt-dlp 的有效 client 名（如 default,mweb），不可当作 auto。
+fn normalized_client(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// 构造 --extractor-args 参数值列表，如
+/// ["youtube:player_client=mweb", "youtube:po_token=mweb.gvs+XXX"]
+pub fn youtube_extractor_args(settings: &crate::settings::AppSettings) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(c) = normalized_client(&settings.youtube_player_client) {
+        out.push(format!("youtube:player_client={c}"));
+    }
+    if let Some(tok) = settings
+        .youtube_po_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // 允许填完整体 "youtube:po_token=..."，否则按 youtube:po_token= 补前缀
+        if tok.contains(':') {
+            out.push(tok.to_string());
+        } else {
+            out.push(format!("youtube:po_token={tok}"));
+        }
+    }
+    out
+}
+
+/// 收集插件目录：默认目录 + 自定义目录（存在的才传，去重）。
+/// 目录不存在/未设置时返回空，调用方不传 --plugin-dirs。
+pub fn youtube_plugin_dirs(
+    app: &AppHandle,
+    settings: &crate::settings::AppSettings,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let def = default_plugin_dir(app);
+    if def.is_dir() {
+        dirs.push(def);
+    }
+    if let Some(custom) = settings
+        .youtube_plugin_dirs
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(custom);
+        if p.is_dir() && !dirs.iter().any(|d| d == &p) {
+            dirs.push(p);
+        }
+    }
+    dirs
+}
+
+/// 把 YouTube 相关参数追加到 tokio Command（解析/下载/校验统一走这里，
+/// 避免某条链路漏传导致 18+ 视频时好时坏）。
+pub fn apply_youtube_options(
+    cmd: &mut tokio::process::Command,
+    app: &AppHandle,
+    settings: &crate::settings::AppSettings,
+) {
+    for d in youtube_plugin_dirs(app, settings) {
+        cmd.arg("--plugin-dirs").arg(d);
+    }
+    for a in youtube_extractor_args(settings) {
+        cmd.arg("--extractor-args").arg(a);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PotStatus {
+    pub plugin_dir: String,
+    pub plugin_files: Vec<String>,
+    pub has_plugin: bool,
+    pub extractor_args_preview: Vec<String>,
+}
+
+/// 前端设置页展示用：默认插件目录 + 目录内容 + 当前 extractor-args 预览。
+/// 只读本地目录，不跑网络，调用廉价。
+#[tauri::command]
+pub async fn pot_status(app: AppHandle) -> PotStatus {
+    let settings = crate::settings::get_settings(app.clone()).unwrap_or_default();
+    let dir = default_plugin_dir(&app);
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Some(n) = e.file_name().to_str().map(|s| s.to_string()) {
+                files.push(n);
+            }
+        }
+        files.sort();
+        files.truncate(50);
+    }
+    let mut has_plugin = !files.is_empty();
+    // 自定义目录有文件也算有插件（展示时加 custom/ 前缀区分）
+    if let Some(custom) = settings
+        .youtube_plugin_dirs
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let p = PathBuf::from(custom);
+        if p.is_dir() && p != dir {
+            if let Ok(entries) = std::fs::read_dir(&p) {
+                let mut extra: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|s| format!("custom/{s}"))
+                    })
+                    .collect();
+                extra.sort();
+                if !extra.is_empty() {
+                    has_plugin = true;
+                    files.extend(extra);
+                    files.sort();
+                    files.truncate(50);
+                }
+            }
+        }
+    }
+    let extractor_args_preview = youtube_extractor_args(&settings);
+    PotStatus {
+        plugin_dir: dir.to_string_lossy().to_string(),
+        plugin_files: files,
+        has_plugin,
+        extractor_args_preview,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::AppSettings;
+
+    #[test]
+    fn auto_client_means_no_extractor_args() {
+        let mut s = AppSettings::default();
+        s.youtube_player_client = "auto".into();
+        s.youtube_po_token = None;
+        assert!(youtube_extractor_args(&s).is_empty());
+        // 空字符串同样视为 auto
+        s.youtube_player_client = "  ".into();
+        assert!(youtube_extractor_args(&s).is_empty());
+    }
+
+    #[test]
+    fn mweb_client_and_manual_token() {
+        let mut s = AppSettings::default();
+        s.youtube_player_client = "mweb".into();
+        s.youtube_po_token = Some("mweb.gvs+XXX".into());
+        assert_eq!(
+            youtube_extractor_args(&s),
+            vec![
+                "youtube:player_client=mweb".to_string(),
+                "youtube:po_token=mweb.gvs+XXX".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn full_token_passthrough_kept_as_is() {
+        let mut s = AppSettings::default();
+        s.youtube_player_client = "auto".into();
+        s.youtube_po_token = Some("youtube:po_token=web_creator.gvs+YYY".into());
+        assert_eq!(
+            youtube_extractor_args(&s),
+            vec!["youtube:po_token=web_creator.gvs+YYY".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_keyword_is_a_real_client_not_auto() {
+        // "default,mweb" 是 yt-dlp 有效写法，必须透传
+        let mut s = AppSettings::default();
+        s.youtube_player_client = "default,mweb".into();
+        s.youtube_po_token = None;
+        assert_eq!(
+            youtube_extractor_args(&s),
+            vec!["youtube:player_client=default,mweb".to_string()]
+        );
+    }
+}

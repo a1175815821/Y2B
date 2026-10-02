@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Y2B - Windows 创作者视频下载器"
 authors = ["Y2B"]
 edition = "2021"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

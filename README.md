@@ -1,91 +1,89 @@
-# Y2B — Windows 创作者视频下载器（Tauri + yt-dlp）
+# Y2B — Windows 创作者视频下载器
 
-Tauri v2 + React + Rust 后端，调用**内置 yt-dlp** 下载指定创作者/单视频，
-支持完整格式列表自选、音频提取、Cookie（Netscape）管理、yt-dlp 与 App 双更新检查。
+![license](https://img.shields.io/badge/license-MIT-green)
+![platform](https://img.shields.io/badge/platform-Windows-blue)
+![version](https://img.shields.io/badge/version-0.1.0-orange)
 
-## 功能对照需求
+Tauri v2 + React + Rust 桌面应用，调用**内置 yt-dlp** 下载 YouTube 指定创作者 / 单视频：
+完整格式列表自选、音频提取、Cookie（Netscape）管理、PO-Token / 播放器客户端设置（18+ 高清绕过）、
+yt-dlp 与 App 双更新检查。
+
+<img src="assets/icon.png" width="120" alt="Y2B icon">
+
+## 功能
 
 | 需求 | 实现 |
 |---|---|
-| Windows UI | Tauri 原生窗口 + React（中文） |
-| 指定创作者视频 | 创作者批量页：频道/@handle/playlist 扫描（`--flat-playlist`），勾选批量下载；单视频页也支持单链/列表 |
-| 可选画质、音频 | 预设（最佳/1080/720/480/mp3/m4a）+ 完整格式列表（`yt-dlp -J`，点击行即选 Format ID） |
-| Cookie 管理 | 命名配置，导入 Netscape `cookies.txt`，设默认/删除/校验（`--cookies` 轻量探测） |
-| 内置 yt-dlp | `resources/yt-dlp.exe` 随包打包；缺失时自动下载到应用数据目录；`设置/更新`可修复 |
-| 检查更新 | yt-dlp：GitHub releases latest 对比+一键更新；App：`tauri-plugin-updater`（需配公钥+latest.json） |
+| Windows 原生窗口 | Tauri v2 + React，中文暗色 UI |
+| 指定创作者批量下 | 频道 / @handle / playlist 扫描（`--flat-playlist`），勾选批量下载 |
+| 单视频下载 | 粘贴链接解析，快捷预设（最佳 / 2160p / 1080p / mp3 …）或点选完整格式列表 |
+| 可选画质、音频 | `yt-dlp -J` 全格式列表（过滤 storyboard，按画质排序），点击行即锁定 Format ID |
+| Cookie 管理 | 命名配置，导入 Netscape `cookies.txt`，设默认 / 删除 / 校验 |
+| 18+ / 高清绕过 | 播放器客户端切换（mweb / web_creator …）+ PO-Token 插件目录 + 手动 Token，见下 |
+| 内置 yt-dlp | `resources/yt-dlp.exe` 随包打包；缺失时自动下载；设置页可一键更新 |
+| 内置 ffmpeg | 音画合并与 mp3/m4a 转码；缺失时一键下载 |
+| 断点续传 | `--continue` + `--no-overwrites`，中断重跑自动续传 |
+| 中文报错 | 30+ 规则把 yt-dlp 英文报错翻译成一句话中文提示 |
 
-## 目录结构
+## 安装
 
-```
-Y2B/
-  src/                    # React 前端
-    components/
-      SingleDownload.tsx  # 单视频/链接下载 + 完整格式列表
-      CreatorBatch.tsx     # 创作者批量扫描 + 勾选下载
-      CookieManager.tsx    # Cookie 导入/管理
-      SettingsPanel.tsx    # 设置 + 双更新检查
-    types.ts  App.tsx  main.tsx  styles.css
-  src-tauri/              # Rust 后端
-    src/
-      lib.rs      # command 注册
-      ytdlp.rs    # 内置定位/下载/更新/ffmpeg
-      media.rs    # resolve_url / list_formats
-      download.rs # start_download 进度事件
-      cookies.rs  # Cookie CRUD + 校验
-      settings.rs # settings.json 持久化
-    tauri.conf.json  capabilities/default.json
-  resources/              # 打包进安装包的二进制（见下）
-```
+到 [Releases](../../releases) 下载 `Y2B_0.1.0_x64-setup.exe`，一路下一步即可。
+安装包已内置 yt-dlp + ffmpeg，开箱即用。
 
-## 快速开始（开发）
+> 首次启动 Windows Defender SmartScreen 可能会拦截（个人签名缺失属正常现象），
+> 点“更多信息 → 仍要运行”即可。
+
+## 使用
+
+1. **Cookie（推荐先配）**：浏览器装扩展导出 Netscape 格式 `cookies.txt`
+   （如 Get cookies.txt LOCALLY，导出 YouTube 域）→「Cookie 管理」→ 填写配置名 → 导入 → 设为默认。
+   之后所有解析 / 下载自动带 `--cookies`，可过登录 / 年龄限制。
+2. **单视频**：「新建下载」粘贴链接 → 解析 → 选画质预设或点格式表行 → 选输出目录 → 开始下载。
+3. **创作者批量**：「创作者批量」粘贴频道 / @handle / 播放列表链接 → 扫描 → 勾选 → 批量下载。
+4. **代理**：公司网用户在「设置」填 `http://127.0.0.1:7890`，更新检查同样走该代理。
+
+### 18+ 视频只剩 360p / 403？（yt-dlp #17542）
+
+这是 YouTube 的 PO-Token 验证：年龄限制视频的高清格式要求 GVS PO Token，
+三步绕过：
+
+1. 把 [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider)
+   （备用 [yt-dlp-getpot-wpc](https://github.com/coletdjnz/yt-dlp-getpot-wpc)）
+   克隆到「设置」页显示的插件目录（`%APPDATA%/com.y2b.downloader/yt-dlp-plugins`）；
+2. 「设置 → YouTube 年龄限制 / PO-Token」把客户端切到 `mweb`；
+3. Cookie 用**已登录成人账号**并设为默认 → 保存后重新解析。
+
+插件模式下「手动 PO-Token」留空即可（Token 绑定单个视频 ID，插件会自动逐个刷）。
+
+## 从源码构建
 
 ```powershell
 npm install
-npm run tauri dev
+npm run tauri dev      # 开发模式
+npm run tauri build    # 打包（需安装 NSIS，产物在 src-tauri/target/release/bundle/）
 ```
 
-首次运行到「设置 / 更新」点「下载 / 修复内置 yt-dlp」即可（存到
-`%APPDATA%\com.y2b.downloader\bin\yt-dlp.exe`）。
+打包前准备（如需更新内置二进制版本，直接替换这两个文件）：
 
-## 内置二进制（打包前准备）
+- `src-tauri/resources/yt-dlp.exe` ← https://github.com/yt-dlp/yt-dlp/releases
+- `src-tauri/resources/ffmpeg.exe` ← https://github.com/yt-dlp/FFmpeg-Builds/releases
 
-下载对应 Windows 构建（两个目录都放一份最省心）：
+后端查找顺序：`resources/` → 应用数据目录 → 系统 PATH。
+`cargo test` 跑后端单测（格式排序、extractor-args 构造、报错翻译规则）。
 
-- `src-tauri/resources/yt-dlp.exe` ← 打包进安装包用（tauri.conf.json bundle.resources）
-- `resources/yt-dlp.exe` ← 开发模式 `npm run tauri dev` 直读用
-- 同理 `ffmpeg.exe`（可选，合并/转码用）← https://github.com/yt-dlp/FFmpeg-Builds/releases
+## 技术栈
 
-后端查找顺序：`resources/` → `app_data/bin/` → 系统 PATH。
+- 前端：React 18 + Vite + TypeScript
+- 后端：Rust（Tauri v2 command：resolve / list_formats / start_download / cookies / settings / pot_status …）
+- 引擎：yt-dlp（内置 exe）+ ffmpeg（内置 exe）
+- 更新：yt-dlp 走 GitHub releases 对比；App 自更新预留了 `tauri-plugin-updater`
+  （发版时需配签名公钥 + latest.json，见「设置」页提示）
 
-## 打包 Windows 安装包
+## 免责声明
 
-```powershell
-npm run tauri build
-# 产物：src-tauri/target/release/bundle/nsis/Y2B_*_x64-setup.exe
-```
+本工具仅供学习与个人备份已获授权的内容。请遵守 YouTube
+服务条款与当地法律法规，不要下载无权保存的视频。年龄限制内容请确保你已成年。
 
-图标：先准备 `src-tauri/icons/icon.ico + 32x32.png + 128x128.png`（可用
-`npm run tauri icon assets/icon.png` 生成），再把 `tauri.conf.json` 的
-`bundle.icon` 指向它们。当前模板为避免缺文件构建失败，`icon` 留空数组，
-正式发版前请补上。
+## 开源协议
 
-## App 自更新配置（发版必需）
-
-1. 生成签名密钥：`npm run tauri signer generate -w ~/.tauri/Y2B.key`
-2. 把公钥填入 `src-tauri/tauri.conf.json → plugins.updater.pubkey`
-3. 把 `endpoints` 改成你的 GitHub Release 的 `latest.json` 地址
-4. CI 打包时带上 `TAURI_SIGNING_PRIVATE_KEY` 环境变量，Release 附带
-   `.nsis.zip` + `.nsis.zip.sig` + `latest.json`，前端「检查 App 更新」即可升级
-
-## Cookie 使用
-
-1. 浏览器装扩展导出 Netscape 格式 `cookies.txt`
-   （如 Get cookies.txt LOCALLY，导出 YouTube 域）
-2. 「Cookie 管理」→ 填写配置名 → 选择文件导入 → 设为默认
-3. 之后所有解析/下载自动带 `--cookies`，可过登录/年龄限制
-
-## 常见问题
-
-- 解析 403 / 登录确认：先导入 Cookie 并设默认，再重试
-- 合并失败/转码失败：确认 ffmpeg 就绪（设置页 `ffmpeg_status`）
-- 公司网/代理：在设置页填代理 `http://127.0.0.1:7890`
+[MIT](LICENSE)

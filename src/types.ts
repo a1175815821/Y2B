@@ -20,6 +20,7 @@ export const TAURI_COMMANDS = {
   historyRemove: "history_remove",
   historyClear: "history_clear",
   openInFolder: "open_in_folder",
+  potStatus: "pot_status",
 } as const;
 
 // ---------- yt-dlp 类型 ----------
@@ -138,6 +139,35 @@ export interface AppSettings {
   filename_template: string;
   default_cookie_profile: string | null;
   ytdlp_version: string | null;
+  /** YouTube 播放器客户端：auto = 不传（yt-dlp 默认）；18+ 建议 mweb */
+  youtube_player_client: string;
+  /** 手动 PO-Token（如 mweb.gvs+XXX），插件模式下留空 */
+  youtube_po_token: string | null;
+  /** 自定义插件目录，为空则只用默认目录 */
+  youtube_plugin_dirs: string | null;
+}
+
+export interface PotStatus {
+  plugin_dir: string;
+  plugin_files: string[];
+  has_plugin: boolean;
+  extractor_args_preview: string[];
+}
+
+/** 老 settings.json 缺新字段时的迁移兜底（后端 serde 也有 default，双保险） */
+export function withSettingsDefaults(s: Partial<AppSettings>): AppSettings {
+  return {
+    out_dir: s.out_dir ?? null,
+    default_format: s.default_format ?? "best",
+    concurrent_fragments: s.concurrent_fragments ?? 4,
+    proxy: s.proxy ?? null,
+    filename_template: s.filename_template ?? "%(title)s [%(id)s].%(ext)s",
+    default_cookie_profile: s.default_cookie_profile ?? null,
+    ytdlp_version: s.ytdlp_version ?? null,
+    youtube_player_client: s.youtube_player_client ?? "auto",
+    youtube_po_token: s.youtube_po_token ?? null,
+    youtube_plugin_dirs: s.youtube_plugin_dirs ?? null,
+  };
 }
 
 export const FORMAT_PRESETS = [

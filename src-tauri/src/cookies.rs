@@ -172,10 +172,12 @@ pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, Str
     }
     let (bin, _) = locate_ytdlp(&app);
     let bin = bin.ok_or("yt-dlp 未就绪，请先下载内置 yt-dlp")?;
+    let yt_settings = crate::settings::get_settings(app.clone()).unwrap_or_default();
     let mut last_err = String::new();
     for probe in COOKIE_PROBE_VIDEOS {
         let mut cmd = tokio::process::Command::new(&bin);
         hide_tokio(&mut cmd);
+        crate::ytdlp::apply_youtube_options(&mut cmd, &app, &yt_settings);
         cmd.args([
             "--cookies",
             &cookie.to_string_lossy(),

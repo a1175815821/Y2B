@@ -2,6 +2,10 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+fn default_player_client() -> String {
+    "auto".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub out_dir: Option<String>,
@@ -11,6 +15,18 @@ pub struct AppSettings {
     pub filename_template: String,
     pub default_cookie_profile: Option<String>,
     pub ytdlp_version: Option<String>,
+    /// YouTube 播放器客户端：auto(=不传，用 yt-dlp 默认) / mweb / web_creator / tv / default,mweb ……
+    /// 18+ 视频建议 mweb（需 PO-Token 插件 + 登录 Cookie）。
+    #[serde(default = "default_player_client")]
+    pub youtube_player_client: String,
+    /// 手动 PO-Token，原样透传，如 "mweb.gvs+XXX"。插件模式下留空。
+    /// 注意 Token 绑定 videoID，一次一换，仅作逃生通道。
+    #[serde(default)]
+    pub youtube_po_token: Option<String>,
+    /// 自定义 yt-dlp 插件目录（PO-Token Provider 装这里）。
+    /// 为空则只用内置默认目录：%APPDATA%/com.y2b.downloader/yt-dlp-plugins
+    #[serde(default)]
+    pub youtube_plugin_dirs: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -23,6 +39,9 @@ impl Default for AppSettings {
             filename_template: "%(title)s [%(id)s].%(ext)s".into(),
             default_cookie_profile: None,
             ytdlp_version: None,
+            youtube_player_client: default_player_client(),
+            youtube_po_token: None,
+            youtube_plugin_dirs: None,
         }
     }
 }

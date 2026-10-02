@@ -208,6 +208,11 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             cmd.arg("--proxy").arg(px.trim());
         }
     }
+    // PO-Token / player_client / plugin-dirs：18+ 高清必需（见 yt-dlp#17542）。
+    // 用全局设置统一追加，保证与格式列表解析一致。
+    if let Ok(s) = crate::settings::get_settings(app.clone()) {
+        crate::ytdlp::apply_youtube_options(&mut cmd, &app, &s);
+    }
     cmd.arg(&request.url);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());

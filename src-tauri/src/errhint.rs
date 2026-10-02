@@ -80,6 +80,18 @@ pub fn friendly_yt_dlp_error(raw: &str) -> String {
             "请求太频繁被限流（429）：等几分钟后再试",
         ),
         (
+            &["po token", "pot provider", "gvs po token", "po_token"],
+            "YouTube 要求 PO-Token 验证：请在「设置」安装 PO-Token 插件并将播放器客户端设为 mweb（18+/高清视频必需），同时确认 Cookie 已登录",
+        ),
+        (
+            &["forcing sabr", "missing a url", "sabr streaming"],
+            "YouTube 只给了 SABR 流（高清被隐藏）：多为缺 PO-Token，请在「设置」装好插件并切 mweb 后重试",
+        ),
+        (
+            &["the page needs to be reloaded", "tv_downgraded"],
+            "YouTube 登录态播放器异常（tv_downgraded）：请在「设置」把播放器客户端改为 mweb 后重试",
+        ),
+        (
             &["http error 403", "status code: 403", "forbidden"],
             "访问被拒绝（403）：IP 或环境受限，尝试更换代理或导入 Cookie",
         ),
@@ -235,5 +247,29 @@ mod tests {
             friendly_yt_dlp_error(""),
             "操作失败，但没有返回具体原因，请重试"
         );
+    }
+
+    #[test]
+    fn gvs_po_token_hint() {
+        let s = friendly_yt_dlp_error(
+            "WARNING: [youtube] xxx: web_creator client https formats require a GVS PO Token which was not provided.",
+        );
+        assert!(s.contains("PO-Token"), "got: {s}");
+    }
+
+    #[test]
+    fn sabr_hint() {
+        let s = friendly_yt_dlp_error(
+            "Some web client https formats have been skipped as they are missing a URL. YouTube is forcing SABR streaming for this client.",
+        );
+        assert!(s.contains("SABR"), "got: {s}");
+    }
+
+    #[test]
+    fn tv_downgraded_hint() {
+        let s = friendly_yt_dlp_error(
+            "ERROR: [youtube] xxx: The page needs to be reloaded. (tv_downgraded player response playability status: UNPLAYABLE)",
+        );
+        assert!(s.contains("mweb"), "got: {s}");
     }
 }

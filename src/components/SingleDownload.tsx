@@ -358,7 +358,9 @@ export default function SingleDownload({
           )}
         </div>
         <div className="hint mt8">
-          Cookie：{settings?.default_cookie_profile ?? "未使用"}（在「Cookie 管理」导入并设为默认后自动生效）
+          Cookie：{settings?.default_cookie_profile ?? "未使用"} · 客户端：
+          {settings?.youtube_player_client ?? "auto"}（18+ 请在「设置」切 mweb
+          并装好 PO 插件）
         </div>
         <label className="row mt8" style={{ gap: 8, cursor: "pointer" }}>
           <input

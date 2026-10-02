@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "description": "Y2B - Windows 创作者视频下载器 (Tauri + yt-dlp)",
   "scripts": {
     "dev": "vite",
