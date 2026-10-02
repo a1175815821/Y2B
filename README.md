@@ -71,13 +71,29 @@ npm run tauri build    # 打包（需安装 NSIS，产物在 src-tauri/target/re
 后端查找顺序：`resources/` → 应用数据目录 → 系统 PATH。
 `cargo test` 跑后端单测（格式排序、extractor-args 构造、报错翻译规则）。
 
+## App 自更新（已启用）
+
+应用内「设置 → 检查应用更新」走 GitHub Releases 的 `latest.json`，
+签名公钥已写入 `src-tauri/tauri.conf.json`。
+
+发新版流程：
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$env:USERPROFILE\.tauri\Y2B.key"
+npm run tauri build -- --bundles nsis
+# 产物：*.exe 安装包 + *.nsis.zip + *.nsis.zip.sig + latest.json
+# 四个文件一起传到新 Release，用户即可在线升级
+```
+
+私钥在 `%USERPROFILE%\.tauri\Y2B.key`，**丢了就签不了新版，务必备份**。
+公钥更换需同步改 `tauri.conf.json` 并重发版。
+
 ## 技术栈
 
 - 前端：React 18 + Vite + TypeScript
 - 后端：Rust（Tauri v2 command：resolve / list_formats / start_download / cookies / settings / pot_status …）
 - 引擎：yt-dlp（内置 exe）+ ffmpeg（内置 exe）
-- 更新：yt-dlp 走 GitHub releases 对比；App 自更新预留了 `tauri-plugin-updater`
-  （发版时需配签名公钥 + latest.json，见「设置」页提示）
+- 更新：yt-dlp 走 GitHub releases 对比；App 自更新走签名 `latest.json`（见上节）
 
 ## 免责声明
 

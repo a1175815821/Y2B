@@ -225,7 +225,7 @@ export default function SettingsPanel({
           </div>
         </div>
         <div className="hint">
-          正式发版需先配置签名公钥与 latest.json 更新地址（见 README「App 自更新配置」），否则检查会提示未配置。
+          应用更新走 GitHub Releases（v0.1.0 起已启用签名更新），点右上「检查应用更新」即可在线升级。
         </div>
       </div>
 
