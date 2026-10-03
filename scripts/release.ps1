@@ -66,18 +66,14 @@ git tag $Tag
 git push origin master
 git push origin $Tag
 
-# ---------- 3. signing password (asked once, masked) ----------
-Step 'signed build (password asked once)'
-$sec = Read-Host 'signing key password' -AsSecureString
-$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-$plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-Remove-Variable sec
-
+# ---------- 3. signing key password ----------
+# The Y2B signing key has NO password: TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays
+# empty (just press Enter anywhere it is asked, including CI secret fields).
+# If the key is ever replaced with an encrypted one, ask again via Read-Host.
+Step 'signed build (key has no password)'
 $env:PATH += ';C:\Program Files (x86)\NSIS'
 $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $keyPath
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $plain
-$plain = $null
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
 
 try {
   # drop stale updater files so we never upload a previous version manifest
