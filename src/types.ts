@@ -108,6 +108,8 @@ export interface DownloadRequest {
   overwrite: boolean;
   /** 已知标题，用于历史记录展示 */
   title?: string | null;
+  /** 播放列表最多下几条（后端缺省 1）：--no-playlist 挡不住纯频道/播放列表 URL，靠这个兜底 */
+  playlist_limit?: number;
 }
 
 export interface DownloadProgress {

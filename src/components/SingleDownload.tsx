@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -18,9 +18,11 @@ import { IconLink, IconFilm, IconFolder, IconPlay, IconSearch, IconInfo, IconRef
 export default function SingleDownload({
   settings,
   onSettingsChange,
+  onGoBatch,
 }: {
   settings: AppSettings | null;
   onSettingsChange: () => void;
+  onGoBatch?: () => void;
 }) {
   const [url, setUrl] = useState("");
   const [resolving, setResolving] = useState(false);
@@ -37,8 +39,28 @@ export default function SingleDownload({
   const [downloading, setDownloading] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [clipLink, setClipLink] = useState<string | null>(null);
+  // settings 是异步到达的：首挂常为 null。用 touched 标记避免覆盖用户已手动修改的值
+  const presetTouched = useRef(false);
+  const outDirTouched = useRef(false);
+  // 记录「上次同步进来」的默认目录：设置里改了目录要跟随，而不是只填一次空
+  const syncedOutDir = useRef<string | null>(null);
 
   const pushLog = (s: string) => setLog((prev) => [...prev.slice(-199), s]);
+
+  // settings 到达 / 变化后同步默认值（用户未手动改过才同步）
+  useEffect(() => {
+    if (!settings) return;
+    if (!presetTouched.current && settings.default_format) {
+      setPreset(settings.default_format);
+    }
+    if (!outDirTouched.current) {
+      const next = settings.out_dir ?? "";
+      if (syncedOutDir.current !== next) {
+        syncedOutDir.current = next;
+        if (next) setOutDir(next);
+      }
+    }
+  }, [settings]);
 
   // 剪贴板嗅探：首次挂载时读一次，有链接且输入框为空才提示
   useEffect(() => {
@@ -88,7 +110,10 @@ export default function SingleDownload({
 
   const pickDir = async () => {
     const dir = await open({ directory: true, multiple: false });
-    if (typeof dir === "string") setOutDir(dir);
+    if (typeof dir === "string") {
+      outDirTouched.current = true;
+      setOutDir(dir);
+    }
   };
 
   const selector = preset === "manual" ? `format_id:${manualId.trim()}` : preset;
@@ -104,7 +129,18 @@ export default function SingleDownload({
 
   const download = async () => {
     if (downloading) return;
-    if (!url.trim() || !outDir.trim()) {
+    // 频道 / 播放列表链接在单视频页没有意义：后端只下 1 条，整批请走「创作者批量」
+    if (media && media.kind !== "video") {
+      setMsg(
+        `这是一个${media.kind === "channel" ? "频道" : "播放列表"}链接（共 ${
+          media.video_count ?? media.entries_preview.length
+        } 个视频），单视频页只会下载第 1 个。整批下载请到「创作者批量」扫描后勾选。`
+      );
+      return;
+    }
+    // 输入框为空时回退到设置里的默认输出目录（与批量页一致）
+    const effectiveOutDir = outDir.trim() || settings?.out_dir?.trim() || "";
+    if (!url.trim() || !effectiveOutDir) {
       setMsg("请填写链接和输出目录");
       return;
     }
@@ -117,21 +153,27 @@ export default function SingleDownload({
     });
     try {
       pushLog(`开始下载：${url.trim()} [${selector}]`);
-      await invoke(TAURI_COMMANDS.startDownload, {
+      const result = await invoke<string>(TAURI_COMMANDS.startDownload, {
         request: {
           url: url.trim(),
           format_selector: selector,
-          out_dir: outDir.trim(),
+          out_dir: effectiveOutDir,
           cookie_profile: settings?.default_cookie_profile ?? null,
           concurrent_fragments: settings?.concurrent_fragments ?? 4,
           proxy: settings?.proxy ?? null,
           filename_template: settings?.filename_template ?? "%(title)s [%(id)s].%(ext)s",
           title: media?.title ?? null,
           overwrite,
+          // 单视频语义：即便链接其实是频道/播放列表，也只下 1 条，不会灌满整个目录
+          playlist_limit: 1,
         },
       });
-      pushLog("下载命令已完成");
-      notifyDownload("Y2B 下载完成", media?.title || url.trim());
+      if (result === "skipped") {
+        pushLog("文件已存在，已跳过（想重下请勾选「覆盖」）");
+      } else {
+        pushLog("下载命令已完成");
+        notifyDownload("Y2B 下载完成", media?.title || url.trim());
+      }
       onSettingsChange();
     } catch (e) {
       const msg = String(e);
@@ -175,7 +217,16 @@ export default function SingleDownload({
               type="text"
               placeholder="https://www.youtube.com/watch?v=…"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                // 链接一改，上一次的解析结果就不再可信：
+                // 否则会出现「拿着频道的解析态去下视频链接」被误拦的情况
+                if (media) {
+                  setMedia(null);
+                  setFormats([]);
+                  setMsg(null);
+                }
+              }}
               onKeyDown={(e) => e.key === "Enter" && resolve()}
             />
           </div>
@@ -226,6 +277,21 @@ export default function SingleDownload({
             </div>
           </div>
         )}
+        {media && media.kind !== "video" && (
+          <div className="callout warn mt12">
+            <IconInfo size={16} />
+            <span className="grow">
+              这是{media.kind === "channel" ? "频道" : "播放列表"}（共{" "}
+              {media.video_count ?? media.entries_preview.length} 个视频），本页只处理单条视频。
+              整批下载请到「创作者批量」扫描后勾选。
+            </span>
+            {onGoBatch && (
+              <button className="btn btn-ghost btn-sm" onClick={onGoBatch}>
+                前往创作者批量
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* —— 02 画质与音频 —— */}
@@ -252,7 +318,10 @@ export default function SingleDownload({
             <button
               key={p.value}
               className={`seg-btn ${preset === p.value ? "active" : ""}`}
-              onClick={() => setPreset(p.value)}
+              onClick={() => {
+                presetTouched.current = true;
+                setPreset(p.value);
+              }}
             >
               {p.label}
             </button>
@@ -297,6 +366,7 @@ export default function SingleDownload({
                     key={f.format_id}
                     className={manualId === f.format_id ? "sel" : ""}
                     onClick={() => {
+                      presetTouched.current = true;
                       setPreset("manual");
                       setManualId(f.format_id);
                     }}
@@ -339,7 +409,11 @@ export default function SingleDownload({
               className="input"
               placeholder="输出目录"
               value={outDir}
-              onChange={(e) => setOutDir(e.target.value)}
+              onChange={(e) => {
+                // 清空等于放弃手动选择，重新跟随设置里的默认目录
+                outDirTouched.current = e.target.value.trim() !== "";
+                setOutDir(e.target.value);
+              }}
             />
           </div>
           <button className="btn btn-ghost" onClick={pickDir} disabled={downloading}>

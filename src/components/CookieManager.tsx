@@ -55,15 +55,23 @@ export default function CookieManager({ onChange }: { onChange: () => void }) {
 
   const remove = async (n: string) => {
     if (!confirm(`删除 Cookie 配置「${n}」？`)) return;
-    await invoke(TAURI_COMMANDS.cookieRemove, { name: n });
-    await refresh();
-    onChange();
+    try {
+      await invoke(TAURI_COMMANDS.cookieRemove, { name: n });
+      await refresh();
+      onChange();
+    } catch (e) {
+      say("error", `删除失败：${String(e)}`);
+    }
   };
 
   const setDefault = async (n: string | null) => {
-    await invoke(TAURI_COMMANDS.cookieSetDefault, { name: n });
-    await refresh();
-    onChange();
+    try {
+      await invoke(TAURI_COMMANDS.cookieSetDefault, { name: n });
+      await refresh();
+      onChange();
+    } catch (e) {
+      say("error", `设置失败：${String(e)}`);
+    }
   };
 
   const validate = async (n: string) => {

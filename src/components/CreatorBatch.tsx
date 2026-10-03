@@ -19,8 +19,8 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   const [media, setMedia] = useState<ResolvedMedia | null>(null);
   const [checked, setChecked] = useState<Record<string, boolean>>({});
   const [q, setQ] = useState("");
-  const [preset, setPreset] = useState("best720");
-  const [outDir, setOutDir] = useState("");
+  const [preset, setPreset] = useState<string>(settings?.default_format ?? "best");
+  const [outDir, setOutDir] = useState(settings?.out_dir ?? "");
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(0);
   const [log, setLog] = useState<string[]>([]);
@@ -30,8 +30,27 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   const [clipLink, setClipLink] = useState<string | null>(null);
   // 取消标志：补后端 CANCEL 在“条目间隙”被重置的时间窗，避免取消丢失
   const cancelRef = useRef(false);
+  // settings 异步到达：未手动改过才同步，避免覆盖用户选择
+  const presetTouched = useRef(false);
+  const outDirTouched = useRef(false);
+  // 记录「上次同步进来」的默认目录：设置里改了目录要跟随，而不是只填一次空
+  const syncedOutDir = useRef<string | null>(null);
 
   const pushLog = (s: string) => setLog((p) => [...p.slice(-299), s]);
+
+  useEffect(() => {
+    if (!settings) return;
+    if (!presetTouched.current && settings.default_format) {
+      setPreset(settings.default_format);
+    }
+    if (!outDirTouched.current) {
+      const next = settings.out_dir ?? "";
+      if (syncedOutDir.current !== next) {
+        syncedOutDir.current = next;
+        if (next) setOutDir(next);
+      }
+    }
+  }, [settings]);
 
   useEffect(() => {
     let alive = true;
@@ -85,7 +104,10 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
 
   const pickDir = async () => {
     const dir = await open({ directory: true, multiple: false });
-    if (typeof dir === "string") setOutDir(dir);
+    if (typeof dir === "string") {
+      outDirTouched.current = true;
+      setOutDir(dir);
+    }
   };
 
   const query = q.trim().toLowerCase();
@@ -106,6 +128,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
 
   const downloadList = async (list: VideoEntry[], dir: string) => {
     let ok = 0;
+    let skipped = 0;
     let fail = 0;
     let cancelled = false;
     const unlisten = await listen<DownloadProgress>("download-progress", (ev) => {
@@ -121,7 +144,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
         const v = list[i];
         pushLog(`(${i + 1}/${list.length}) 开始：${v.title} ${v.url}`);
         try {
-          await invoke(TAURI_COMMANDS.startDownload, {
+          const r = await invoke<string>(TAURI_COMMANDS.startDownload, {
             request: {
               url: v.url,
               format_selector: preset,
@@ -133,10 +156,17 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
               task_label: v.id,
               title: v.title ?? null,
               overwrite: false,
+              // 批量走单条视频 URL，这里再兜一层，杜绝误传频道链接时灌满目录
+              playlist_limit: 1,
             },
           });
-          pushLog(`(${i + 1}/${list.length}) 完成`);
-          ok++;
+          if (r === "skipped") {
+            pushLog(`(${i + 1}/${list.length}) 已存在，跳过`);
+            skipped++;
+          } else {
+            pushLog(`(${i + 1}/${list.length}) 完成`);
+            ok++;
+          }
           setResults((p) => ({ ...p, [v.id]: "ok" }));
         } catch (e) {
           const msg = String(e);
@@ -155,7 +185,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     } finally {
       unlisten();
     }
-    return { ok, fail, cancelled };
+    return { ok, skipped, fail, cancelled };
   };
 
   const batchDownload = async (onlyFailed = false) => {
@@ -172,9 +202,12 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     setMsg(null);
     setDone(0);
     cancelRef.current = false;
-    const { ok, fail, cancelled } = await downloadList(list, dir);
+    const { ok, skipped, fail, cancelled } = await downloadList(list, dir);
     setRunning(false);
-    if (!cancelled) notifyDownload("Y2B 批量完成", `成功 ${ok} / 失败 ${fail}（本次 ${list.length} 个）`);
+    if (!cancelled) {
+      const tail = skipped > 0 ? `，跳过 ${skipped}` : "";
+      notifyDownload("Y2B 批量完成", `成功 ${ok} / 失败 ${fail}${tail}（本次 ${list.length} 个）`);
+    }
   };
 
   return (
@@ -340,7 +373,15 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
           </div>
 
           <div className="actionbar">
-            <select className="select" value={preset} onChange={(e) => setPreset(e.target.value)} style={{ width: 210 }}>
+            <select
+              className="select"
+              value={preset}
+              onChange={(e) => {
+                presetTouched.current = true;
+                setPreset(e.target.value);
+              }}
+              style={{ width: 210 }}
+            >
               {FORMAT_PRESETS.filter((p) => p.value !== "manual").map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
@@ -350,8 +391,12 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
             <input
               className="input grow"
               placeholder="输出目录"
-              value={outDir || settings?.out_dir || ""}
-              onChange={(e) => setOutDir(e.target.value)}
+              value={outDir}
+              onChange={(e) => {
+                // 清空等于放弃手动选择，重新跟随设置里的默认目录
+                outDirTouched.current = e.target.value.trim() !== "";
+                setOutDir(e.target.value);
+              }}
             />
             <button className="btn btn-ghost" onClick={pickDir} disabled={running}>
               <IconFolder size={15} />

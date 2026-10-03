@@ -39,14 +39,22 @@ export default function HistoryPanel({ active }: { active: boolean }) {
   };
 
   const remove = async (id: string) => {
-    await invoke(TAURI_COMMANDS.historyRemove, { id });
-    await refresh();
+    try {
+      await invoke(TAURI_COMMANDS.historyRemove, { id });
+      await refresh();
+    } catch (e) {
+      setMsg(`删除失败：${String(e)}`);
+    }
   };
 
   const clear = async () => {
     if (!confirm("清空全部下载历史？（仅删除记录，不删除文件）")) return;
-    await invoke(TAURI_COMMANDS.historyClear);
-    await refresh();
+    try {
+      await invoke(TAURI_COMMANDS.historyClear);
+      await refresh();
+    } catch (e) {
+      setMsg(`清空失败：${String(e)}`);
+    }
   };
 
   const okCount = items.filter((i) => i.status === "ok").length;

@@ -391,19 +391,47 @@ fn normalized_client(raw: &str) -> Option<String> {
     }
 }
 
-/// 生效的 player_client：用户显式选择优先；auto + 允许自动 + 本地 PO 栈可用 → mweb
-/// （mweb 高清强制要 GVS Token，没有本地栈时传 mweb 只会全 403，所以要门控）。
+/// 生效的 player_client：用户显式选择优先；auto 永远不强制（用 yt-dlp 默认）。
+/// 背景：bgutil 插件在默认客户端下即可按需供 Token（官方用法就是“像平常一样用”），
+/// 而单写 mweb 会丢掉 yt-dlp 的多客户端回退——PO 服务没起来或脚本兜底一哑火，
+/// 普通视频也会跟着失败。18+ / PO 场景由调用方在命中 PO 特征报错时自动用 mweb
+/// 重试一次（见 is_po_retryable_error），普通视频全程不受影响。
 pub fn effective_player_client(
-    app: &AppHandle,
+    _app: &AppHandle,
     settings: &crate::settings::AppSettings,
 ) -> Option<String> {
-    if let Some(c) = normalized_client(&settings.youtube_player_client) {
-        return Some(c);
-    }
-    if settings.youtube_po_auto && crate::pot::stack_usable(app) {
-        return Some("mweb".into());
-    }
-    None
+    normalized_client(&settings.youtube_player_client)
+}
+
+/// PO / 年龄限制特征报错：默认客户端拿不下、值得用 mweb 再试一次的信号。
+/// 注意刻意收窄范围：bot 检查缺 Cookie、地区限制、版权私享等重试也救不了，
+/// 不在此列，避免把一次失败拖成两次长时间等待。
+/// 入参可能是 yt-dlp 原文也可能是翻译后的中文提示（解析/格式链路），所以中英都认。
+pub fn is_po_retryable_error(raw: &str) -> bool {
+    let s = raw.to_lowercase();
+    const KEYS: &[&str] = &[
+        "po token",
+        "po-token",
+        "pot provider",
+        "gvs po",
+        "po_token",
+        "forcing sabr",
+        "sabr streaming",
+        "sabr",
+        "missing a url",
+        "tv_downgraded",
+        "the page needs to be reloaded",
+        "confirm your age",
+        "age-gated",
+        "age restricted",
+        "年龄限制",
+    ];
+    KEYS.iter().any(|k| s.contains(k))
+}
+
+/// auto 且允许自动切 mweb 时才做 PO 重试（显式选了客户端的尊重用户，不擅自换）。
+pub fn should_auto_retry_po(settings: &crate::settings::AppSettings) -> bool {
+    normalized_client(&settings.youtube_player_client).is_none() && settings.youtube_po_auto
 }
 
 /// 构造 --extractor-args 参数值列表，如
@@ -584,6 +612,45 @@ mod tests {
         // 空字符串同样视为 auto
         s.youtube_player_client = "  ".into();
         assert!(youtube_extractor_args_for(&s, None, None).is_empty());
+    }
+
+    #[test]
+    fn po_retryable_matches_only_po_agegate_signals() {
+        // PO / SABR / tv 降级 / 年龄限制 → 值得用 mweb 重试（含翻译后的中文提示）
+        for e in [
+            "ERROR: web_creator client https formats require a GVS PO Token which was not provided",
+            "Some web client https formats have been skipped as they are missing a URL. YouTube is forcing SABR streaming for this client",
+            "The page needs to be reloaded. (tv_downgraded player response playability status: UNPLAYABLE)",
+            "ERROR: [youtube] xxx: This video is age-gated",
+            "解析失败：YouTube 要求 PO-Token 验证：请在「设置」安装 PO-Token 插件",
+            "获取格式失败：YouTube 只给了 SABR 流（高清被隐藏）",
+            "解析失败：该视频有年龄限制：请导入已登录的 Cookie 后重试",
+        ] {
+            assert!(is_po_retryable_error(e), "should retry: {e}");
+        }
+        // 以下重试也救不了 → 不重试，避免把一次失败拖成两次等待
+        for e in [
+            "ERROR: Sign in to confirm you're not a bot",
+            "ERROR: This video is unavailable",
+            "ERROR: Requested format is not available",
+            "HTTP Error 403: Forbidden",
+            "",
+        ] {
+            assert!(!is_po_retryable_error(e), "should NOT retry: {e}");
+        }
+    }
+
+    #[test]
+    fn auto_retry_only_when_auto_and_allowed() {
+        let mut s = AppSettings::default();
+        s.youtube_player_client = "auto".into();
+        s.youtube_po_auto = true;
+        assert!(should_auto_retry_po(&s));
+        s.youtube_po_auto = false;
+        assert!(!should_auto_retry_po(&s));
+        s.youtube_po_auto = true;
+        s.youtube_player_client = "mweb".into();
+        assert!(!should_auto_retry_po(&s));
     }
 
     #[test]

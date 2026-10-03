@@ -385,7 +385,7 @@ pub async fn pot_ensure(app: AppHandle, refresh: bool) -> Result<PotStackStatus,
     );
     // 4. 起服务（ best-effort：起不来也有 script 兜底）
     let msg = start_server(app.clone()).await.unwrap_or_else(|e| e);
-    let mut st = stack_status(&app).await;
+    let st = stack_status(&app).await;
     // 把启动结论塞进 effective_client？不，状态里另起字段太碎，前端看 server_running 即可
     let _ = msg;
     Ok(st)

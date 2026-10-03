@@ -71,7 +71,8 @@ fn pick_thumbnail(v: &serde_json::Value) -> Option<String> {
         .find_map(|t| t.get("url")?.as_str().map(|s| s.to_string()))
 }
 
-/// flat-playlist 抓取，返回解析后的 JSON
+/// flat-playlist 抓取，返回解析后的 JSON。
+/// auto 默认走 yt-dlp 默认客户端；命中 PO/年龄特征且允许时自动用 mweb 重试一次。
 async fn fetch_flat_json(
     app: &AppHandle,
     bin: &std::path::Path,
@@ -79,6 +80,33 @@ async fn fetch_flat_json(
     max: u32,
 ) -> Result<serde_json::Value, String> {
     let settings = get_settings(app.clone()).unwrap_or_default();
+    match fetch_flat_json_with(app, bin, url, max, &settings).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            if !crate::ytdlp::should_auto_retry_po(&settings)
+                || !crate::pot::stack_usable(app)
+                || !crate::ytdlp::is_po_retryable_error(&e)
+            {
+                return Err(e);
+            }
+            let mut retry = settings.clone();
+            retry.youtube_player_client = "mweb".into();
+            match fetch_flat_json_with(app, bin, url, max, &retry).await {
+                Ok(v) => Ok(v),
+                Err(e2) => Err(format!("{e2}（已自动用 mweb 重试仍失败）")),
+            }
+        }
+    }
+}
+
+/// 单次抓取；重试逻辑由 fetch_flat_json 外层负责，这里只跑一次
+async fn fetch_flat_json_with(
+    app: &AppHandle,
+    bin: &std::path::Path,
+    url: &str,
+    max: u32,
+    settings: &crate::settings::AppSettings,
+) -> Result<serde_json::Value, String> {
     let mut cmd = tokio::process::Command::new(bin);
     hide_tokio(&mut cmd);
     cmd.args([
@@ -102,8 +130,8 @@ async fn fetch_flat_json(
             cmd.arg("--proxy").arg(proxy.trim());
         }
     }
-    // PO-Token / player_client / plugin-dirs：18+ 高清必需，与下载链路保持一致
-    crate::ytdlp::apply_youtube_options(&mut cmd, app, &settings);
+    // PO-Token / player_client / plugin-dirs：插件与兜底常带，客户端按 settings 来（与下载链路保持一致）
+    crate::ytdlp::apply_youtube_options(&mut cmd, app, settings);
     cmd.arg(url);
 
     // 总超时兜底：socket-timeout 只管单连接，整命令卡住时前端不再无限转圈
@@ -203,7 +231,9 @@ pub async fn resolve_url(
     let bin = bin.ok_or("yt-dlp 未就绪，请先到 设置/更新 下载内置 yt-dlp")?;
     let max = max_entries.unwrap_or(100).clamp(1, 500);
 
-    let mut json = fetch_flat_json(&app, &bin, &url, max).await?;
+    // 多取 1 条：--playlist-end 恰好等于总数时无法区分「刚好这么多」和「被截断」
+    let probe = max.saturating_add(1);
+    let mut json = fetch_flat_json(&app, &bin, &url, probe).await?;
 
     // 频道页在 flat 模式下返回 Videos/Shorts/Live 等 Tab 条目而非视频时，
     // 自动钻取 Videos Tab（一层，且地址不同才钻，避免循环）
@@ -212,7 +242,7 @@ pub async fn resolve_url(
         if let Some(entries) = json.get("entries").and_then(|e| e.as_array()) {
             if let Some(tab_url) = find_videos_tab_url(entries, &url) {
                 if tab_url != url {
-                    json = fetch_flat_json(&app, &bin, &tab_url, max).await?;
+                    json = fetch_flat_json(&app, &bin, &tab_url, probe).await?;
                 }
             }
         }
@@ -250,12 +280,13 @@ pub async fn resolve_url(
     }
 
     // playlist / channel
-    let entries = json
+    let mut entries = json
         .get("entries")
         .and_then(|e| e.as_array())
         .cloned()
         .unwrap_or_default();
-    let truncated = entries.len() as u32 >= max;
+    let truncated = entries.len() > max as usize;
+    entries.truncate(max as usize);
     let preview = entries
         .into_iter()
         .filter_map(|e| {
@@ -357,16 +388,18 @@ fn prepare_formats(formats: &[serde_json::Value]) -> Vec<&serde_json::Value> {
     sorted
 }
 
-#[tauri::command]
-pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>, String> {
-    let (bin, _) = locate_ytdlp(&app);
-    let bin = bin.ok_or("yt-dlp 未就绪")?;
-    let settings = get_settings(app.clone()).unwrap_or_default();
-    let mut cmd = tokio::process::Command::new(&bin);
+/// 单次格式抓取，返回原始 JSON；PO 重试由 list_formats 外层负责
+async fn list_formats_with(
+    app: &AppHandle,
+    bin: &std::path::Path,
+    url: &str,
+    settings: &crate::settings::AppSettings,
+) -> Result<serde_json::Value, String> {
+    let mut cmd = tokio::process::Command::new(bin);
     hide_tokio(&mut cmd);
     cmd.args(["-J", "--no-playlist", "--no-warnings", "--socket-timeout", "20"]);
     if let Some(ref prof) = settings.default_cookie_profile {
-        if let Ok(p) = cookie_file_for(&app, prof) {
+        if let Ok(p) = cookie_file_for(app, prof) {
             if p.is_file() {
                 cmd.arg("--cookies").arg(p);
             }
@@ -378,8 +411,8 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
         }
     }
     // PO-Token / player_client / plugin-dirs：列表与下载用同一套，避免解析有高清、下载却 403
-    crate::ytdlp::apply_youtube_options(&mut cmd, &app, &settings);
-    cmd.arg(&url);
+    crate::ytdlp::apply_youtube_options(&mut cmd, app, settings);
+    cmd.arg(url);
     let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
         .await
         .map_err(|_| "获取格式超时（60秒），请重试".to_string())?
@@ -390,8 +423,32 @@ pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>
             &String::from_utf8_lossy(&out.stderr),
         ));
     }
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("解析失败: {e}"))?;
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("解析失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn list_formats(app: AppHandle, url: String) -> Result<Vec<FormatItem>, String> {
+    let (bin, _) = locate_ytdlp(&app);
+    let bin = bin.ok_or("yt-dlp 未就绪")?;
+    let settings = get_settings(app.clone()).unwrap_or_default();
+    let first = list_formats_with(&app, &bin, &url, &settings).await;
+    let json: serde_json::Value = match first {
+        Ok(v) => v,
+        Err(e) => {
+            // 与解析/下载一致：PO 特征才用 mweb 重试，避免普通失败被拖成双倍等待
+            if !crate::ytdlp::should_auto_retry_po(&settings)
+                || !crate::pot::stack_usable(&app)
+                || !crate::ytdlp::is_po_retryable_error(&e)
+            {
+                return Err(e);
+            }
+            let mut retry = settings.clone();
+            retry.youtube_player_client = "mweb".into();
+            list_formats_with(&app, &bin, &url, &retry)
+                .await
+                .map_err(|e2| format!("{e2}（已自动用 mweb 重试仍失败）"))?
+        }
+    };
     let formats = json
         .get("formats")
         .and_then(|f| f.as_array())

@@ -26,6 +26,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [spinning, setSpinning] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>("…");
 
   const refreshEnv = async () => {
     setSpinning(true);
@@ -50,6 +51,10 @@ export default function App() {
 
   useEffect(() => {
     refreshEnv();
+    import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then((v) => setAppVersion(v))
+      .catch(() => setAppVersion("0.2.1"));
   }, []);
 
   return (
@@ -126,7 +131,11 @@ export default function App() {
             )}
 
             <section className={tab === "single" ? "" : "tab-hidden"}>
-              <SingleDownload settings={settings} onSettingsChange={refreshEnv} />
+              <SingleDownload
+                settings={settings}
+                onSettingsChange={refreshEnv}
+                onGoBatch={() => setTab("creator")}
+              />
             </section>
             <section className={tab === "creator" ? "" : "tab-hidden"}>
               <CreatorBatch settings={settings} />
@@ -158,7 +167,7 @@ export default function App() {
           </span>
           <div className="right">
             <span className="stat-item">{settings?.out_dir ?? "未设置输出目录"}</span>
-            <span className="stat-item">Y2B v0.2.1</span>
+            <span className="stat-item">Y2B v{appVersion}</span>
           </div>
         </footer>
       </div>

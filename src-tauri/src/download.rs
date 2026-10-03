@@ -31,6 +31,11 @@ pub struct DownloadRequest {
     /// 文件已存在时是否覆盖重下；缺省 false = 跳过（配合 --continue 实现断点续传）
     #[serde(default)]
     pub overwrite: Option<bool>,
+    /// 播放列表最多下几条；缺省 1（单视频语义）。
+    /// 注意：--no-playlist 只挡「URL 同时指向视频与播放列表」的情形，
+    /// 纯频道/播放列表 URL 不受它限制（实测会全量下载整个频道），必须靠 --playlist-end 兜底。
+    #[serde(default)]
+    pub playlist_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +50,20 @@ pub struct DownloadProgress {
 }
 
 static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 单飞锁：同一时刻只允许一个下载任务。
+/// CANCEL 是全局量、进度事件也只有 download-progress 一个名字，
+/// 两个页面并发下载会互相串扰（取消杀错进程、进度跑到别的页面），直接禁止并发最省事也最安全。
+static BUSY: AtomicBool = AtomicBool::new(false);
+
+/// BUSY 的 RAII 守卫：任务正常返回、出错甚至 panic 都会复位，
+/// 避免一次异常就把后续所有下载永久锁死（要重启应用才能恢复）。
+struct BusyGuard;
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        BUSY.store(false, Ordering::SeqCst);
+    }
+}
 
 #[tauri::command]
 pub fn cancel_download() -> Result<(), String> {
@@ -131,7 +150,48 @@ fn map_selector(sel: &str) -> (String, Vec<String>) {
 
 #[tauri::command]
 pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<String, String> {
-    CANCEL.store(false, Ordering::SeqCst);
+    // 单飞：已有任务在跑就直接拒绝，避免全局 CANCEL / 进度事件互相串扰
+    if BUSY
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("已有下载任务正在进行，请等待完成或先点「取消」".into());
+    }
+    let _guard = BusyGuard;
+    start_download_inner(app, request).await
+}
+
+/// PO 失败时的服务状态后缀：帮用户区分“没装 / 没启动 / 跑着还失败（多半 Cookie 或 IP 风控）”
+fn po_service_note(app: &AppHandle) -> String {
+    if !crate::pot::stack_usable(app) {
+        "（PO组件未安装或不完整：到「设置」点一键安装并启动后重试；普通视频保持 auto 即可）"
+            .to_string()
+    } else if !crate::pot::http_ready() {
+        "（PO服务未运行：已尝试脚本兜底仍失败，到「设置」点启动 PO 服务后重试）".to_string()
+    } else {
+        "（PO服务运行中仍失败：多半是 Cookie 未登录/非成人账号或 IP 被风控，检查 Cookie 并设为默认后重试）"
+            .to_string()
+    }
+}
+
+/// 真正的下载流程；由 start_download 包裹以保证 BUSY 标志一定复位
+async fn start_download_inner(
+    app: AppHandle,
+    request: DownloadRequest,
+) -> Result<String, String> {
+    start_download_inner_with_client(app, request, None).await
+}
+
+/// 单次下载尝试。auto 默认走 yt-dlp 默认客户端（普通视频最稳，不再预先强制 mweb）；
+/// 失败且命中 PO/年龄限制特征、用户允许自动切、PO 栈可用时，调用方再用 mweb 调一次（最多一次）。
+async fn start_download_inner_with_client(
+    app: AppHandle,
+    request: DownloadRequest,
+    forced_client: Option<String>,
+) -> Result<String, String> {
+    if forced_client.is_none() {
+        CANCEL.store(false, Ordering::SeqCst);
+    }
     let (bin, _) = locate_ytdlp(&app);
     let bin = bin.ok_or("yt-dlp 未就绪，请先下载内置 yt-dlp")?;
 
@@ -158,10 +218,15 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
 
     let mut cmd = tokio::process::Command::new(&bin);
     hide_tokio(&mut cmd);
+    // 播放列表兜底上限：--no-playlist 挡不住纯频道/播放列表 URL（会全量下载），
+    // 这里硬性限制条目数。单视频语义下默认 1，批量走单条 URL 不受影响。
+    let playlist_limit = request.playlist_limit.unwrap_or(1).clamp(1, 500);
     cmd.args([
         "--newline",
         "--progress",
         "--no-playlist",
+        "--playlist-end",
+        &playlist_limit.to_string(),
         // 断点续传：同名 .part 文件自动续下（默认行为，此处显式声明）
         "--continue",
         "-f",
@@ -208,9 +273,14 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             cmd.arg("--proxy").arg(px.trim());
         }
     }
-    // PO-Token / player_client / plugin-dirs：18+ 高清必需（见 yt-dlp#17542）。
-    // 用全局设置统一追加，保证与格式列表解析一致。
-    if let Ok(s) = crate::settings::get_settings(app.clone()) {
+    // PO-Token / player_client / plugin-dirs：插件目录与脚本兜底常带（按需供 Token，
+    // 对普通视频无副作用，见 bgutil 官方“像平常一样用”）；player_client 只在用户显式
+    // 选择或 mweb 自动重试时才传，auto 永不预先强制 mweb。
+    {
+        let mut s = crate::settings::get_settings(app.clone()).unwrap_or_default();
+        if let Some(c) = forced_client.clone() {
+            s.youtube_player_client = c;
+        }
         crate::ytdlp::apply_youtube_options(&mut cmd, &app, &s);
     }
     cmd.arg(&request.url);
@@ -410,10 +480,11 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             let t = stderr_tail.lock().unwrap();
             t.iter().any(|l| l.contains("has already been downloaded"))
         };
-        let done_line = if skipped {
-            "文件已存在，跳过下载"
+        // 跳过的不能谎报「下载完成」：返回 skipped 让前端区分通知与日志
+        let (done_line, result_code, detail) = if skipped {
+            ("文件已存在，跳过下载", "skipped", Some("文件已存在，跳过下载".into()))
         } else {
-            "下载完成"
+            ("下载完成", "ok", None)
         };
         emit(DownloadProgress {
             task_id: task_id.clone(),
@@ -431,23 +502,57 @@ pub async fn start_download(app: AppHandle, request: DownloadRequest) -> Result<
             request.out_dir.clone(),
             request.format_selector.clone(),
             "ok",
-            None,
+            detail,
         );
-        Ok("ok".into())
+        Ok(result_code.into())
     } else {
         let tail: String = {
             let t = stderr_tail.lock().unwrap();
             t.iter().cloned().collect::<Vec<_>>().join("\n")
         };
-        let msg = if tail.trim().is_empty() {
+        // PO 自动重试：auto + 允许 + 栈可用 + 命中 PO/年龄特征 → 用 mweb 再试一次。
+        // 注意放在写历史/发 error 事件之前，避免历史里多一条误导性的失败记录。
+        if forced_client.is_none()
+            && !CANCEL.load(Ordering::SeqCst)
+            && crate::ytdlp::is_po_retryable_error(&tail)
+            && crate::settings::get_settings(app.clone())
+                .map(|s| crate::ytdlp::should_auto_retry_po(&s))
+                .unwrap_or(false)
+            && crate::pot::stack_usable(&app)
+        {
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgress {
+                    task_id: task_id.clone(),
+                    url: request.url.clone(),
+                    status: "progress".into(),
+                    percent: None,
+                    speed: None,
+                    eta: None,
+                    line: Some("默认客户端拿不下（PO/年龄限制特征），正用 mweb 自动重试…".into()),
+                },
+            );
+            return Box::pin(start_download_inner_with_client(
+                app.clone(),
+                request,
+                Some("mweb".into()),
+            ))
+            .await;
+        }
+        let mut msg = if tail.trim().is_empty() {
             format!("下载失败：yt-dlp 异常退出（退出码 {}），请重试", status.code().unwrap_or(-1))
         } else {
             format!(
-                "下载失败：{}（退出码 {}）",
+                "下载失败：{}（退出码 {}{}）",
                 crate::errhint::friendly_yt_dlp_error(&tail),
-                status.code().unwrap_or(-1)
+                status.code().unwrap_or(-1),
+                if forced_client.is_some() { "，已用 mweb" } else { "" },
             )
         };
+        // PO 相关失败追加服务状态：没装 / 没启动 / 跑着还失败，三种去向不一样
+        if crate::ytdlp::is_po_retryable_error(&tail) {
+            msg.push_str(&po_service_note(&app));
+        }
         emit(DownloadProgress {
             task_id: task_id.clone(),
             url: request.url.clone(),

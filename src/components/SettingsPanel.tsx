@@ -42,8 +42,11 @@ export default function SettingsPanel({
   const [update, setUpdate] = useState<YtdlpUpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [working, setWorking] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>("…");
 
-  if (settings && !form) setForm(withSettingsDefaults(settings));
+  useEffect(() => {
+    if (settings && !form) setForm(withSettingsDefaults(settings));
+  }, [settings, form]);
 
   useEffect(() => {
     invoke<FfmpegStatus>(TAURI_COMMANDS.ffmpegStatus)
@@ -52,6 +55,10 @@ export default function SettingsPanel({
     invoke<PotStatus>(TAURI_COMMANDS.potStatus)
       .then(setPot)
       .catch(() => setPot(null));
+    import("@tauri-apps/api/app")
+      .then((m) => m.getVersion())
+      .then((v) => setAppVersion(v))
+      .catch(() => setAppVersion("0.2.1"));
   }, []);
 
   const say = (kind: "info" | "error" | "success", text: string) => {
@@ -112,10 +119,14 @@ export default function SettingsPanel({
   };
   const save = async () => {
     if (!form) return;
-    await invoke(TAURI_COMMANDS.saveSettings, { settings: form });
-    say("success", "下载偏好已保存（含 YouTube 客户端 / PO-Token 设置）。");
-    await refreshPot();
-    onChange();
+    try {
+      await invoke(TAURI_COMMANDS.saveSettings, { settings: form });
+      say("success", "下载偏好已保存（含 YouTube 客户端 / PO-Token 设置）。");
+      await refreshPot();
+      onChange();
+    } catch (e) {
+      say("error", `保存失败：${String(e)}`);
+    }
   };
 
   const pickDir = async () => {
@@ -263,7 +274,7 @@ export default function SettingsPanel({
           </div>
           <div>
             <h3>本应用更新</h3>
-            <p>当前版本 v0.1.0 · 基于 tauri-plugin-updater</p>
+            <p>当前版本 v{appVersion} · 基于 tauri-plugin-updater</p>
           </div>
           <div style={{ marginLeft: "auto" }}>
             <CheckAppUpdateButton say={say} proxy={form.proxy ?? null} />
@@ -319,7 +330,7 @@ export default function SettingsPanel({
             checked={form.youtube_po_auto ?? true}
             onChange={(e) => set("youtube_po_auto", e.target.checked)}
           />
-          <span className="hint">服务就绪时自动用 mweb 拿高清（推荐；服务异常时自动回退默认客户端）</span>
+          <span className="hint">PO/年龄限制失败时自动用 mweb 重试（推荐；普通视频优先默认客户端，最稳）</span>
         </label>
         <div className="grid2 mt12">
           <div className="field">
@@ -329,7 +340,7 @@ export default function SettingsPanel({
               value={form.youtube_player_client ?? "auto"}
               onChange={(e) => set("youtube_player_client", e.target.value)}
             >
-              <option value="auto">auto（服务就绪时按 mweb，否则默认）</option>
+              <option value="auto">auto（默认优先，PO/18+失败时自动切 mweb 重试）</option>
               <option value="mweb">mweb（强制，需 PO 服务+Cookie）</option>
               <option value="web_creator">web_creator（需登录 Cookie+PO 服务）</option>
               <option value="tv">tv（免 PO，但登录态多为 DRM）</option>
@@ -362,7 +373,8 @@ export default function SettingsPanel({
         )}
         <div className="hint mt8">
           一键安装会下载 provider 插件（8KB）+ 预编译 PO 服务（约 27MB）+ Node portable
-          （约 30MB，一次性），随后开机自动拉起 127.0.0.1:4416 服务。18+ 视频仍需 Cookie
+          （约 30MB，一次性），随后每次启动 Y2B 时自动拉起 127.0.0.1:4416 服务。
+          18+ 视频仍需 Cookie
           用已登录成人账号（Cookie 管理页导入并设默认）。
         </div>
       </div>
