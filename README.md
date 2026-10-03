@@ -2,7 +2,7 @@
 
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![platform](https://img.shields.io/badge/platform-Windows-blue)
-![version](https://img.shields.io/badge/version-0.1.0-orange)
+![version](https://img.shields.io/badge/version-0.2.2-orange)
 
 Tauri v2 + React + Rust 桌面应用，调用**内置 yt-dlp** 下载 YouTube 指定创作者 / 单视频：
 完整格式列表自选、音频提取、Cookie（Netscape）管理、PO-Token / 播放器客户端设置（18+ 高清绕过）、
@@ -27,7 +27,7 @@ yt-dlp 与 App 双更新检查。
 
 ## 安装
 
-到 [Releases](../../releases) 下载 `Y2B_0.1.0_x64-setup.exe`，一路下一步即可。
+到 [Releases](../../releases) 下载 `Y2B_0.2.2_x64-setup.exe`，一路下一步即可。
 安装包已内置 yt-dlp + ffmpeg，开箱即用。
 
 > 首次启动 Windows Defender SmartScreen 可能会拦截（个人签名缺失属正常现象），

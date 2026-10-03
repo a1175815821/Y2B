@@ -54,7 +54,7 @@ export default function App() {
     import("@tauri-apps/api/app")
       .then((m) => m.getVersion())
       .then((v) => setAppVersion(v))
-      .catch(() => setAppVersion("0.2.1"));
+      .catch(() => setAppVersion("0.2.2"));
   }, []);
 
   return (
