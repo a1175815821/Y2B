@@ -71,7 +71,7 @@ export default function SettingsPanel({
     import("@tauri-apps/api/app")
       .then((m) => m.getVersion())
       .then((v) => setAppVersion(v))
-      .catch(() => setAppVersion("0.2.2"));
+      .catch(() => setAppVersion("0.2.3"));
   }, []);
 
   const say = (kind: "info" | "error" | "success", text: string) => {
