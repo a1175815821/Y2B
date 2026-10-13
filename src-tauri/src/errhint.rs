@@ -4,20 +4,82 @@
 //! 未命中任何规则时回退到最后一条 ERROR 行（去前缀、截断），
 //! 保证前端永远只展示一句能看懂的话。完整原文仍保留在日志面板里。
 
+/// 取末端报错文本：最后几条非空、非进度的行拼起来。
+/// 日志中段的 WARNING（顺手打的 PO 提示、重试记录）不能用来定性死因。
+fn terminal_text(text: &str) -> String {
+    text.lines()
+        .rev()
+        .filter_map(|l| {
+            let t = l.trim();
+            if t.is_empty() {
+                return None;
+            }
+            if t.starts_with("[download]") && t.contains('%') {
+                return None;
+            }
+            Some(t.to_string())
+        })
+        .take(5)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 末端是否已经钉死了具体（非 PO）死因：磁盘/权限/ffmpeg/代理/网络/证书/Cookie 文件等。
+/// 这类失败换 mweb 重试也救不了，调用方据此决定是否值得重试。
+pub fn terminal_has_concrete_error(raw: &str) -> bool {
+    const CONCRETE_KEYS: &[&str] = &[
+        "errno",
+        "invalid argument",
+        "could not open",
+        "unable to open",
+        "file name too long",
+        "filename too long",
+        "no space left on device",
+        "permission denied",
+        "ffmpeg",
+        "ffprobe",
+        "postprocessing",
+        "post-process",
+        "failed to parse proxy",
+        "temporary failure in name resolution",
+        "nodename nor servname",
+        "name or service not known",
+        "failed to establish a new connection",
+        "connection timed out",
+        "connection reset",
+        "network is unreachable",
+        "timed out",
+        "connection aborted",
+        "max retries exceeded",
+        "ssl",
+        "certificate verify failed",
+        "certificate_verify_failed",
+        "invalid cookie",
+        "could not open cookie",
+        "error parsing cookie",
+        "file is larger than",
+        "file is too large",
+    ];
+    let term = terminal_text(&raw.replace('\r', "\n")).to_lowercase();
+    CONCRETE_KEYS.iter().any(|k| term.contains(k))
+}
+
 /// 将 yt-dlp 的英文报错翻译为中文一句话
 pub fn friendly_yt_dlp_error(raw: &str) -> String {
     let text = raw.replace('\r', "\n");
     let lower = text.to_lowercase();
+    let lower_term = terminal_text(&text).to_lowercase();
 
-    // 按优先级匹配，命中即返回
+    // 按优先级匹配，命中即返回。
+    // 注意 PO 类规则单列 PO_RULES：末端窗口里 WARNING 和 ERROR 并存时（如中段 PO 提示 +
+    // 末端 Errno），具体死因必须先赢，PO 只做兜底。
     const RULES: &[(&[&str], &str)] = &[
         (
             &["not a bot", "sign in to confirm"],
             "YouTube 判定当前环境为机器人：请导入登录后的 Cookie 并设为默认，或更换网络/代理后重试",
-        ),
-        (
-            &["confirm your age", "age-gated", "age restricted"],
-            "该视频有年龄限制：请导入已登录的 Cookie 后重试",
         ),
         (
             &["private video"],
@@ -80,18 +142,6 @@ pub fn friendly_yt_dlp_error(raw: &str) -> String {
             "请求太频繁被限流（429）：等几分钟后再试",
         ),
         (
-            &["po token", "pot provider", "gvs po token", "po_token"],
-            "YouTube 要求 PO-Token 验证：请在「设置」安装 PO-Token 插件并将播放器客户端设为 mweb（18+/高清视频必需），同时确认 Cookie 已登录",
-        ),
-        (
-            &["forcing sabr", "missing a url", "sabr streaming"],
-            "YouTube 只给了 SABR 流（高清被隐藏）：多为缺 PO-Token，请在「设置」装好插件并切 mweb 后重试",
-        ),
-        (
-            &["the page needs to be reloaded", "tv_downgraded"],
-            "YouTube 登录态播放器异常（tv_downgraded）：请在「设置」把播放器客户端改为 mweb 后重试",
-        ),
-        (
             &["http error 403", "status code: 403", "forbidden"],
             "访问被拒绝（403）：IP 或环境受限，尝试更换代理或导入 Cookie",
         ),
@@ -151,9 +201,52 @@ pub fn friendly_yt_dlp_error(raw: &str) -> String {
             &["file is larger than", "file is too large"],
             "文件超出大小限制：换低一档画质试试",
         ),
+        // 本地文件写失败（放最后：只在别的规则都没命中末端报错时才认，
+        // 避免 "invalid argument" 这类宽泛词抢掉更具体的诊断）。
+        // 注：下载已带 --windows-filenames + --trim-filenames 自动处理标题里的
+        // 非法字符与超长文件名，走到这里多为目录本身的问题（OneDrive 占用/无权限/路径仍超长）。
+        (
+            &["errno", "invalid argument", "could not open", "unable to open", "file name too long", "filename too long", "bad file descriptor"],
+            "本地文件写入失败（已自动做 Windows 文件名兼容仍失败）：多为输出目录过深导致路径超长、无写入权限，或目录在 OneDrive 同步盘被锁定。换个短英文目录（如 D:\\Videos，重试前确认该盘可写且不在同步中）后重试",
+        ),
     ];
 
+    // PO 类规则：这类信号经常以 WARNING 形式出现在日志中段、
+    // 真正的 ERROR 行却是泛泛的一句，所以允许用全文扫描兜底。
+    // 注意顺序与原 RULES 一致（age 在前），保持历史优先级不变。
+    const PO_RULES: &[(&[&str], &str)] = &[
+        (
+            &["confirm your age", "age-gated", "age restricted"],
+            "该视频有年龄限制：请导入已登录的 Cookie 后重试",
+        ),
+        (
+            &["po token", "pot provider", "gvs po token", "po_token"],
+            "YouTube 要求 PO-Token 验证：请在「设置」安装 PO-Token 插件并将播放器客户端设为 mweb（18+/高清视频必需），同时确认 Cookie 已登录",
+        ),
+        (
+            &["forcing sabr", "missing a url", "sabr streaming"],
+            "YouTube 只给了 SABR 流（高清被隐藏）：多为缺 PO-Token，请在「设置」装好插件并切 mweb 后重试",
+        ),
+        (
+            &["the page needs to be reloaded", "tv_downgraded"],
+            "YouTube 登录态播放器异常（tv_downgraded）：请在「设置」把播放器客户端改为 mweb 后重试",
+        ),
+    ];
+
+    // 末端报错优先：先具体规则、再 PO 规则；tail 里陈年 WARNING
+    // （比如顺手打的 PO 提示）不能盖过末端真正的死因。
+    // 只有末端都没命中时，才允许 PO 规则用全文兜底。
     for (keys, msg) in RULES {
+        if keys.iter().any(|k| lower_term.contains(k)) {
+            return msg.to_string();
+        }
+    }
+    for (keys, msg) in PO_RULES {
+        if keys.iter().any(|k| lower_term.contains(k)) {
+            return msg.to_string();
+        }
+    }
+    for (keys, msg) in PO_RULES {
         if keys.iter().any(|k| lower.contains(k)) {
             return msg.to_string();
         }
@@ -239,6 +332,20 @@ mod tests {
         assert!(s.starts_with("操作失败"), "got: {s}");
         assert!(!s.contains("[youtube]"));
         assert!(!s.contains("ERROR:"));
+    }
+
+    /// 线上报障原样：末端是 Errno 22 文件错，中段夹着 PO WARNING。
+    /// 末端必须赢：报文件问题，不许报 PO，更不许触发 mweb 重试。
+    #[test]
+    fn errno_terminal_beats_po_warning_in_tail() {
+        let raw = "WARNING: [youtube] YjIRi1DfmO4: web client https formats require a GVS PO Token which was not provided. Retrying with mweb client\n\
+                   [download]   0.0% at   1.2MiB/s ETA 00:05\n\
+                   ERROR: [youtube] YjIRi1DfmO4: Unable to download video: [Errno 22] Invalid argument\n\
+                   OSError: [Errno 22] Invalid argument";
+        let s = friendly_yt_dlp_error(raw);
+        assert!(s.contains("文件写入失败"), "got: {s}");
+        assert!(!s.contains("PO-Token"), "got: {s}");
+        assert!(terminal_has_concrete_error(raw));
     }
 
     #[test]

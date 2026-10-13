@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { TAURI_COMMANDS, CookieProfile } from "../types";
 import { IconKey, IconCheck, IconTrash, IconInfo } from "./icons";
+import { useToast } from "./toasts";
 
 export default function CookieManager({ onChange }: { onChange: () => void }) {
   const [profiles, setProfiles] = useState<CookieProfile[]>([]);
@@ -10,6 +11,7 @@ export default function CookieManager({ onChange }: { onChange: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [msgKind, setMsgKind] = useState<"info" | "error" | "success">("info");
   const [busy, setBusy] = useState(false);
+  const { push: toast } = useToast();
 
   const say = (kind: "info" | "error" | "success", text: string) => {
     setMsgKind(kind);
@@ -44,10 +46,13 @@ export default function CookieManager({ onChange }: { onChange: () => void }) {
     try {
       await invoke(TAURI_COMMANDS.cookieImport, { name: profile, srcPath: file });
       say("success", `已导入 Cookie 配置「${profile}」，可设为默认后直接用于下载。`);
+      toast("success", `Cookie「${profile}」导入成功`);
       await refresh();
       onChange();
     } catch (e) {
-      say("error", `导入失败：${String(e)}`);
+      const m = `导入失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setBusy(false);
     }
@@ -79,8 +84,11 @@ export default function CookieManager({ onChange }: { onChange: () => void }) {
     try {
       const ok = await invoke<string>(TAURI_COMMANDS.cookieValidate, { name: n });
       say("success", ok);
+      toast("success", ok);
     } catch (e) {
-      say("error", String(e));
+      const m = String(e);
+      say("error", m);
+      toast("error", m);
     }
   };
 

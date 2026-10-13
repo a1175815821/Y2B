@@ -8,10 +8,12 @@ import {
   FfmpegStatus,
   YtdlpUpdateInfo,
   PotStatus,
+  PotDiagnose,
   FORMAT_PRESETS,
   withSettingsDefaults,
 } from "../types";
 import { IconGear, IconRefresh, IconFolder, IconInfo, IconCheck, IconKey } from "./icons";
+import { useToast } from "./toasts";
 
 function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
@@ -45,8 +47,19 @@ export default function SettingsPanel({
   const [appVersion, setAppVersion] = useState<string>("…");
 
   useEffect(() => {
-    if (settings && !form) setForm(withSettingsDefaults(settings));
-  }, [settings, form]);
+    if (!settings) return;
+    // 本页只维护下面这些字段；其余字段（Cookie 页会改 default_cookie_profile）
+    // 以服务端最新值为准。否则本页会一直用「应用启动时」的首帧快照，
+    // 点「保存偏好」时把 Cookie 页刚设好的默认配置回滚掉。
+    setForm((prev) => {
+      const base = prev ?? withSettingsDefaults(settings);
+      return {
+        ...base,
+        default_cookie_profile: settings.default_cookie_profile,
+        ytdlp_version: settings.ytdlp_version,
+      };
+    });
+  }, [settings]);
 
   useEffect(() => {
     invoke<FfmpegStatus>(TAURI_COMMANDS.ffmpegStatus)
@@ -77,17 +90,50 @@ export default function SettingsPanel({
     }
   };
 
+  const [diagBusy, setDiagBusy] = useState(false);
+  const { push: toast } = useToast();
+
   const ensurePot = async () => {
     setPotBusy(true);
     say("info", "正在安装 PO 组件（约 60MB，一次性）并启动服务，请稍候…");
     try {
       await invoke(TAURI_COMMANDS.potEnsure, { refresh: false });
       await refreshPot();
-      say("success", "PO 服务已就绪：高清/18+ 解析自动走 mweb。");
+      say("success", "PO 服务已就绪：普通视频走默认客户端，PO/18+ 失败时自动切 mweb 重试。");
+      toast("success", "PO 服务已就绪");
     } catch (e) {
-      say("error", `PO 安装失败：${String(e)}`);
+      const m = `PO 安装失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setPotBusy(false);
+    }
+  };
+
+  const diagnosePot = async () => {
+    setDiagBusy(true);
+    say("info", "正在诊断 PO 链路（文件/node/脚本自检/服务，最多约 40 秒）…");
+    try {
+      const d = await invoke<PotDiagnose>(TAURI_COMMANDS.potDiagnose);
+      await refreshPot();
+      const lines = [
+        "PO 诊断：",
+        `插件包: ${d.provider_zip ? `有（${d.plugin_files.join(", ") || "空目录"}）` : "缺失，请点一键安装"}`,
+        `node: ${d.node_version ?? "缺失或起不来"}`,
+        `脚本自检: ${d.script_version ?? "失败"}${d.script_error ? `（${d.script_error}）` : ""}`,
+        `服务: ${d.server_running ? `运行中${d.server_version ? ` v${d.server_version}` : ""}` : "未运行（点启动 PO 服务；普通视频不受影响）"}`,
+        `生效客户端: ${d.effective_client}`,
+        `透传参数: ${d.extractor_args_preview.join("  ") || "无（默认客户端直连）"}`,
+      ];
+      const bad = !!d.script_error || !d.provider_zip;
+      say(bad ? "error" : "info", lines.join("\n"));
+      toast(bad ? "error" : "info", bad ? "PO 诊断发现问题，详见下方" : "PO 诊断通过：链路正常");
+    } catch (e) {
+      const m = `诊断失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
+    } finally {
+      setDiagBusy(false);
     }
   };
 
@@ -98,8 +144,11 @@ export default function SettingsPanel({
       await invoke(TAURI_COMMANDS.potEnsure, { refresh: true });
       await refreshPot();
       say("success", "PO 组件已更新并启动。");
+      toast("success", "PO 组件已更新并启动");
     } catch (e) {
-      say("error", `PO 更新失败：${String(e)}`);
+      const m = `PO 更新失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setPotBusy(false);
     }
@@ -107,12 +156,16 @@ export default function SettingsPanel({
 
   const stopPot = async () => {
     setPotBusy(true);
+    say("info", "正在停止 PO 服务（含复用/残留进程清理）…");
     try {
-      await invoke(TAURI_COMMANDS.potStop);
+      const msg = await invoke<string>(TAURI_COMMANDS.potStop);
       await refreshPot();
-      say("info", "已停止 PO 服务（下载回退默认客户端）。");
+      say("info", msg);
+      toast("info", msg);
     } catch (e) {
-      say("error", `停止失败：${String(e)}`);
+      const m = `停止失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setPotBusy(false);
     }
@@ -122,10 +175,13 @@ export default function SettingsPanel({
     try {
       await invoke(TAURI_COMMANDS.saveSettings, { settings: form });
       say("success", "下载偏好已保存（含 YouTube 客户端 / PO-Token 设置）。");
+      toast("success", "下载偏好已保存");
       await refreshPot();
       onChange();
     } catch (e) {
-      say("error", `保存失败：${String(e)}`);
+      const m = `保存失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     }
   };
 
@@ -140,9 +196,12 @@ export default function SettingsPanel({
     try {
       const s = await invoke<YtdlpStatus>(TAURI_COMMANDS.ensureYtdlp);
       say("success", `yt-dlp 就绪：${s.version}。`);
+      toast("success", `yt-dlp 就绪：${s.version}`);
       onChange();
     } catch (e) {
-      say("error", `失败：${String(e)}`);
+      const m = `失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setWorking(false);
     }
@@ -160,7 +219,9 @@ export default function SettingsPanel({
           : `yt-dlp 已是最新（${info.current}）。`
       );
     } catch (e) {
-      say("error", `检查失败：${String(e)}`);
+      const m = `检查失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setChecking(false);
     }
@@ -172,10 +233,13 @@ export default function SettingsPanel({
     try {
       const s = await invoke<YtdlpStatus>(TAURI_COMMANDS.updateYtdlp);
       say("success", `已更新到 ${s.version}。`);
+      toast("success", `yt-dlp 已更新到 ${s.version}`);
       setUpdate(null);
       onChange();
     } catch (e) {
-      say("error", `更新失败：${String(e)}`);
+      const m = `更新失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setWorking(false);
     }
@@ -188,9 +252,12 @@ export default function SettingsPanel({
       const s = await invoke<FfmpegStatus>(TAURI_COMMANDS.ensureFfmpeg);
       setFfmpeg(s);
       say("success", "ffmpeg 已就绪，合并与转码功能可用。");
+      toast("success", "ffmpeg 已就绪");
       onChange();
     } catch (e) {
-      say("error", `失败：${String(e)}`);
+      const m = `失败：${String(e)}`;
+      say("error", m);
+      toast("error", m);
     } finally {
       setWorking(false);
     }
@@ -322,6 +389,14 @@ export default function SettingsPanel({
               </button>
             </>
           )}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={diagnosePot}
+            disabled={diagBusy || potBusy}
+            title="检查插件/node/脚本自检/服务，定位 Token 拿不到的原因"
+          >
+            {diagBusy ? "诊断中…" : "PO 诊断"}
+          </button>
         </div>
         <label className="row mt12" style={{ gap: 8, cursor: "pointer" }}>
           <input
@@ -410,6 +485,7 @@ export default function SettingsPanel({
               value={form.filename_template}
               onChange={(e) => set("filename_template", e.target.value)}
             />
+            <span className="hint">标题里的 | ? * 等 Windows 非法字符与超长文件名会自动兼容处理，无需手动改模板</span>
           </div>
           <div className="field">
             <span className="label">默认画质</span>
@@ -454,7 +530,7 @@ export default function SettingsPanel({
       {msg && (
         <div className={`callout ${msgKind}`}>
           <IconInfo size={16} />
-          <span>{msg}</span>
+          <span style={{ whiteSpace: "pre-wrap" }}>{msg}</span>
         </div>
       )}
     </div>
@@ -468,6 +544,7 @@ function CheckAppUpdateButton({
   say: (k: "info" | "error" | "success", s: string) => void;
   proxy: string | null;
 }) {
+  const { push: toast } = useToast();
   const [busy, setBusy] = useState(false);
   const [phase, setPhase] = useState<string | null>(null);
   return (
@@ -485,8 +562,10 @@ function CheckAppUpdateButton({
           );
           if (!u) {
             say("success", "应用已是最新。");
+            toast("success", "应用已是最新");
           } else {
             say("info", `发现新版本 ${u.version}（当前 ${u.currentVersion}），开始下载更新包…`);
+            toast("info", `发现新版本 ${u.version}，开始下载更新包…`);
             let done = 0;
             let total = 0;
             let lastShown = -1;
@@ -516,7 +595,9 @@ function CheckAppUpdateButton({
           if (msg.includes("YOUR_NAME") || msg.includes("pubkey") || msg.includes("url")) {
             say("info", "应用自更新尚未配置（需发版时填签名公钥与 latest.json 地址），不影响 yt-dlp 下载功能。");
           } else {
-            say("error", `应用更新失败：${msg}（公司网请先在下方设置代理；若版本未变请手动到 Releases 页下载安装包覆盖安装）`);
+            const m = `应用更新失败：${msg}（公司网请先在下方设置代理；若版本未变请手动到 Releases 页下载安装包覆盖安装）`;
+            say("error", m);
+            toast("error", m);
           }
         } finally {
           setBusy(false);

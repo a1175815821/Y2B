@@ -178,6 +178,12 @@ pub async fn cookie_validate(app: AppHandle, name: String) -> Result<String, Str
         let mut cmd = tokio::process::Command::new(&bin);
         hide_tokio(&mut cmd);
         crate::ytdlp::apply_youtube_options(&mut cmd, &app, &yt_settings);
+        // 与解析/下载链路保持一致：设了代理就必须带上，否则代理用户永远校验失败
+        if let Some(ref proxy) = yt_settings.proxy {
+            if !proxy.trim().is_empty() {
+                cmd.arg("--proxy").arg(proxy.trim());
+            }
+        }
         cmd.args([
             "--cookies",
             &cookie.to_string_lossy(),

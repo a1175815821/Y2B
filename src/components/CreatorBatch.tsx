@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { notifyDownload, readClipboardLink } from "../utils";
+import { useToast } from "./toasts";
 import {
   TAURI_COMMANDS,
   AppSettings,
@@ -30,6 +31,7 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
   const [clipLink, setClipLink] = useState<string | null>(null);
   // 取消标志：补后端 CANCEL 在“条目间隙”被重置的时间窗，避免取消丢失
   const cancelRef = useRef(false);
+  const { push: toast } = useToast();
   // settings 异步到达：未手动改过才同步，避免覆盖用户选择
   const presetTouched = useRef(false);
   const outDirTouched = useRef(false);
@@ -45,7 +47,9 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     }
     if (!outDirTouched.current) {
       const next = settings.out_dir ?? "";
-      if (syncedOutDir.current !== next) {
+      // 输入框被清空（touched 已复位）或默认目录变了，都要回填，
+      // 否则「清空 = 放弃手动选择，重新跟随设置」这句承诺落空
+      if (outDir.trim() === "" || syncedOutDir.current !== next) {
         syncedOutDir.current = next;
         if (next) setOutDir(next);
       }
@@ -89,7 +93,9 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
       setResults({});
       pushLog(`扫描到 ${r.video_count ?? r.entries_preview.length} 个视频（显示前 ${r.entries_preview.length} 条）`);
     } catch (e) {
-      setMsg(String(e));
+      const m = String(e);
+      setMsg(m);
+      toast("error", m);
     } finally {
       setScanning(false);
     }
@@ -170,7 +176,8 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
           setResults((p) => ({ ...p, [v.id]: "ok" }));
         } catch (e) {
           const msg = String(e);
-          pushLog(`(${i + 1}/${list.length}) 失败：${msg}`);
+          const short = msg.replace(/^下载失败：/, "");
+          pushLog(`(${i + 1}/${list.length}) 失败：${short}`);
           fail++;
           setResults((p) => ({ ...p, [v.id]: "fail" }));
           // 用户主动取消：直接中断整个批量，而不是继续下一个（下一个会重置取消标志）
@@ -204,9 +211,13 @@ export default function CreatorBatch({ settings }: { settings: AppSettings | nul
     cancelRef.current = false;
     const { ok, skipped, fail, cancelled } = await downloadList(list, dir);
     setRunning(false);
-    if (!cancelled) {
+    if (cancelled) {
+      toast("info", "批量已取消");
+    } else {
       const tail = skipped > 0 ? `，跳过 ${skipped}` : "";
-      notifyDownload("Y2B 批量完成", `成功 ${ok} / 失败 ${fail}${tail}（本次 ${list.length} 个）`);
+      const summary = `成功 ${ok} / 失败 ${fail}${tail}（本次 ${list.length} 个）`;
+      toast(fail > 0 ? "error" : "success", `批量完成：${summary}`);
+      notifyDownload("Y2B 批量完成", summary);
     }
   };
 

@@ -13,11 +13,10 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+        // 只注册前端真正用到的插件：dialog / process / updater。
+        // shell / fs / http / opener 前端零调用（Rust 侧 explorer、netstat、taskkill
+        // 走 std::process::Command，不经插件权限校验），保留只是白送权限面。
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -45,6 +44,7 @@ pub fn run() {
             ytdlp::pot_status,
             pot::pot_ensure,
             pot::pot_stop,
+            pot::pot_diagnose,
             media::resolve_url,
             media::list_formats,
             download::start_download,

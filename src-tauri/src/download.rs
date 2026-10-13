@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::cookies::cookie_file_for;
 use crate::history::push_history;
-use crate::ytdlp::{hide_tokio, locate_ytdlp};
+use crate::ytdlp::{apply_ffmpeg_location, hide_tokio, locate_ytdlp};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DownloadRequest {
@@ -229,6 +229,12 @@ async fn start_download_inner_with_client(
         &playlist_limit.to_string(),
         // 断点续传：同名 .part 文件自动续下（默认行为，此处显式声明）
         "--continue",
+        // Windows 文件名兼容：标题里的 <>:"/\|?*（如本例的 " | "）不经处理会直接
+        // 报 [Errno 22] Invalid argument。--windows-filenames 把它们替换为全角/下划线，
+        // --trim-filenames 防止超长标题 + 深目录爆 MAX_PATH（不含扩展名，150 留余量）。
+        "--windows-filenames",
+        "--trim-filenames",
+        "150",
         "-f",
         &fmt,
         "-o",
@@ -282,6 +288,10 @@ async fn start_download_inner_with_client(
             s.youtube_player_client = c;
         }
         crate::ytdlp::apply_youtube_options(&mut cmd, &app, &s);
+        // ffmpeg 必须显式指路：yt-dlp 默认只按裸名 "ffmpeg" 找，
+        // 而它与 Y2B 的 ffmpeg 可能不在同一目录（yt-dlp 已更新到应用数据目录时）。
+        // 找不到时合并会静默失败且退出码仍为 0，成功分支另有检测兜底。
+        apply_ffmpeg_location(&mut cmd, &app);
     }
     cmd.arg(&request.url);
     cmd.stdout(std::process::Stdio::piped());
@@ -475,16 +485,51 @@ async fn start_download_inner_with_client(
         g.wait().await.map_err(|e| e.to_string())?
     };
     if status.success() {
-        // --no-overwrites 命中时 yt-dlp 退出码同样为 0，需区分“真下完”和“跳过”
-        let skipped = {
+        let tail_text: String = {
             let t = stderr_tail.lock().unwrap();
-            t.iter().any(|l| l.contains("has already been downloaded"))
+            t.iter().cloned().collect::<Vec<_>>().join("\n")
         };
-        // 跳过的不能谎报「下载完成」：返回 skipped 让前端区分通知与日志
-        let (done_line, result_code, detail) = if skipped {
-            ("文件已存在，跳过下载", "skipped", Some("文件已存在，跳过下载".into()))
+        let lower = tail_text.to_lowercase();
+        // ffmpeg 不可用时 yt-dlp 只打一行 WARNING（"...ffmpeg is not installed. The
+        // formats won't be merged"）并以退出码 0 结束，产物是 .fXXX.mp4 / .fXXX.m4a
+        // 两个分片而不是目标文件。只看退出码会向用户谎报「下载完成」，必须单独识别成失败。
+        let ffmpeg_missing =
+            lower.contains("ffmpeg is not installed") || lower.contains("ffmpeg not found");
+        if ffmpeg_missing {
+            let msg = "下载未完成：ffmpeg 不可用，音视频分片已下好但没能合并（输出目录里是 .fXXX.mp4 / .fXXX.m4a 碎片）。请到「设置」确认内置 ffmpeg 就绪后重试".to_string();
+            emit(DownloadProgress {
+                task_id: task_id.clone(),
+                url: request.url.clone(),
+                status: "error".into(),
+                percent: None,
+                speed: None,
+                eta: None,
+                line: Some(msg.clone()),
+            });
+            push_history(
+                &app,
+                request.url.clone(),
+                request.title.clone(),
+                request.out_dir.clone(),
+                request.format_selector.clone(),
+                "error",
+                Some(msg.clone()),
+            );
+            return Err(msg);
+        }
+        // --no-overwrites 命中时 yt-dlp 退出码同样为 0，需区分“真下完”和“跳过”
+        let skipped = tail_text.contains("has already been downloaded");
+        // 跳过的不能谎报「下载完成」：返回 skipped 让前端区分通知与日志，
+        // 历史里也记成 skipped 而不是 ok（否则历史页会把它算进成功数）
+        let (done_line, result_code, detail, hist_status) = if skipped {
+            (
+                "文件已存在，跳过下载",
+                "skipped",
+                Some("文件已存在，跳过下载".into()),
+                "skipped",
+            )
         } else {
-            ("下载完成", "ok", None)
+            ("下载完成", "ok", None, "ok")
         };
         emit(DownloadProgress {
             task_id: task_id.clone(),
@@ -501,7 +546,7 @@ async fn start_download_inner_with_client(
             request.title.clone(),
             request.out_dir.clone(),
             request.format_selector.clone(),
-            "ok",
+            hist_status,
             detail,
         );
         Ok(result_code.into())

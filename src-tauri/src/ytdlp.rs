@@ -282,7 +282,7 @@ pub struct FfmpegStatus {
     pub source: String,
 }
 
-fn locate_ffmpeg(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
+pub fn locate_ffmpeg(app: &AppHandle) -> (Option<PathBuf>, &'static str) {
     // 应用数据目录优先（用户下载的），出厂内置次之：保证更新/下载真正生效
     if let Ok(data) = app.path().app_data_dir() {
         let p = data.join("bin").join("ffmpeg.exe");
@@ -329,6 +329,23 @@ pub fn ffmpeg_status(app: AppHandle) -> FfmpegStatus {
         path: p.map(|x| x.to_string_lossy().to_string()),
         ready: s != "missing",
         source: s.to_string(),
+    }
+}
+
+/// 把定位到的 ffmpeg 显式指给 yt-dlp。
+/// yt-dlp 在未给 --ffmpeg-location 时只按裸名 "ffmpeg" 找（PATH + Windows 应用目录），
+/// 而 Y2B 的 yt-dlp 与 ffmpeg 可能不在同一目录（例如 yt-dlp 已更新到
+/// 应用数据目录 bin/、ffmpeg 仍是出厂内置 resources/），此时合并/转码会静默失败。
+pub fn apply_ffmpeg_location(cmd: &mut tokio::process::Command, app: &AppHandle) {
+    let (p, _) = locate_ffmpeg(app);
+    if let Some(path) = p {
+        // system 分支返回的是裸名 "ffmpeg.exe"（无父目录），交给 PATH 处理，
+        // 传进去反而会被 abspath 到当前工作目录
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                cmd.arg("--ffmpeg-location").arg(path);
+            }
+        }
     }
 }
 
@@ -407,6 +424,8 @@ pub fn effective_player_client(
 /// 注意刻意收窄范围：bot 检查缺 Cookie、地区限制、版权私享等重试也救不了，
 /// 不在此列，避免把一次失败拖成两次长时间等待。
 /// 入参可能是 yt-dlp 原文也可能是翻译后的中文提示（解析/格式链路），所以中英都认。
+/// 末端已经钉死具体死因（磁盘/权限/ffmpeg/网络/文件名等）时直接否决：
+/// 日志中段顺手打的 PO WARNING 不能把文件/环境问题验成 PO 病。
 pub fn is_po_retryable_error(raw: &str) -> bool {
     let s = raw.to_lowercase();
     const KEYS: &[&str] = &[
@@ -426,7 +445,7 @@ pub fn is_po_retryable_error(raw: &str) -> bool {
         "age restricted",
         "年龄限制",
     ];
-    KEYS.iter().any(|k| s.contains(k))
+    KEYS.iter().any(|k| s.contains(k)) && !crate::errhint::terminal_has_concrete_error(raw)
 }
 
 /// auto 且允许自动切 mweb 时才做 PO 重试（显式选了客户端的尊重用户，不擅自换）。
@@ -504,6 +523,24 @@ pub fn youtube_plugin_dirs(
     dirs
 }
 
+/// 回环直连保护：插件取 Token 走 127.0.0.1:4416，node 刷 Token 也要建连。
+/// 公司机上常有系统级代理环境变量，不加 bypass 的话回环请求会被扔给代理，
+/// 服务明明跑着，Token 却一个都要不到。只合并、不覆盖用户已有的 NO_PROXY。
+fn protect_loopback(cmd: &mut tokio::process::Command) {
+    for key in ["NO_PROXY", "no_proxy"] {
+        let mut v = std::env::var(key).unwrap_or_default();
+        for host in ["127.0.0.1", "localhost"] {
+            if !v.split(',').any(|s| s.trim().eq_ignore_ascii_case(host)) {
+                if !v.trim().is_empty() {
+                    v.push(',');
+                }
+                v.push_str(host);
+            }
+        }
+        cmd.env(key, v);
+    }
+}
+
 /// 把 YouTube 相关参数追加到 tokio Command（解析/下载/校验统一走这里，
 /// 避免某条链路漏传导致 18+ 视频时好时坏）。
 pub fn apply_youtube_options(
@@ -511,6 +548,7 @@ pub fn apply_youtube_options(
     app: &AppHandle,
     settings: &crate::settings::AppSettings,
 ) {
+    protect_loopback(cmd);
     for d in youtube_plugin_dirs(app, settings) {
         cmd.arg("--plugin-dirs").arg(d);
     }
@@ -638,6 +676,15 @@ mod tests {
         ] {
             assert!(!is_po_retryable_error(e), "should NOT retry: {e}");
         }
+        // 末端是文件错、PO 只是中段 WARNING → 不重试（线上误诊原样）
+        assert!(
+            !is_po_retryable_error(
+                "WARNING: [youtube] xxx: GVS PO Token which was not provided. Retrying with mweb client\n\
+                 ERROR: [youtube] xxx: Unable to download video: [Errno 22] Invalid argument\n\
+                 OSError: [Errno 22] Invalid argument"
+            ),
+            "errno terminal must veto PO retry"
+        );
     }
 
     #[test]

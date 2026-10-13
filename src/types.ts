@@ -23,7 +23,20 @@ export const TAURI_COMMANDS = {
   potStatus: "pot_status",
   potEnsure: "pot_ensure",
   potStop: "pot_stop",
+  potDiagnose: "pot_diagnose",
 } as const;
+
+export interface PotDiagnose {
+  provider_zip: boolean;
+  plugin_files: string[];
+  node_version: string | null;
+  script_version: string | null;
+  script_error: string | null;
+  server_running: boolean;
+  server_version: string | null;
+  effective_client: string;
+  extractor_args_preview: string[];
+}
 
 // ---------- yt-dlp 类型 ----------
 
@@ -199,7 +212,7 @@ export interface HistoryEntry {
   title: string | null;
   out_dir: string;
   format_selector: string;
-  /** ok | error */
+  /** ok | skipped | error —— skipped = 文件已存在被 --no-overwrites 跳过 */
   status: string;
   detail: string | null;
   created_at: string;

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { notifyDownload, readClipboardLink } from "../utils";
+import { useToast } from "./toasts";
 import {
   TAURI_COMMANDS,
   AppSettings,
@@ -39,6 +40,7 @@ export default function SingleDownload({
   const [downloading, setDownloading] = useState(false);
   const [overwrite, setOverwrite] = useState(false);
   const [clipLink, setClipLink] = useState<string | null>(null);
+  const { push: toast } = useToast();
   // settings 是异步到达的：首挂常为 null。用 touched 标记避免覆盖用户已手动修改的值
   const presetTouched = useRef(false);
   const outDirTouched = useRef(false);
@@ -55,7 +57,9 @@ export default function SingleDownload({
     }
     if (!outDirTouched.current) {
       const next = settings.out_dir ?? "";
-      if (syncedOutDir.current !== next) {
+      // 输入框被清空（touched 已复位）或默认目录变了，都要回填，
+      // 否则「清空 = 放弃手动选择，重新跟随设置」这句承诺落空
+      if (outDir.trim() === "" || syncedOutDir.current !== next) {
         syncedOutDir.current = next;
         if (next) setOutDir(next);
       }
@@ -87,7 +91,9 @@ export default function SingleDownload({
       if (r.kind === "video") await loadFormats(url.trim());
       else setFormats([]);
     } catch (e) {
-      setMsg(String(e));
+      const m = String(e);
+      setMsg(m);
+      toast("error", m);
     } finally {
       setResolving(false);
     }
@@ -102,7 +108,9 @@ export default function SingleDownload({
       setFormats(f);
       pushLog(`获取到 ${f.length} 个格式`);
     } catch (e) {
-      setMsg(String(e));
+      const m = String(e);
+      setMsg(m);
+      toast("error", m);
     } finally {
       setLoadingFormats(false);
     }
@@ -170,15 +178,19 @@ export default function SingleDownload({
       });
       if (result === "skipped") {
         pushLog("文件已存在，已跳过（想重下请勾选「覆盖」）");
+        toast("info", "文件已存在，已跳过");
       } else {
         pushLog("下载命令已完成");
+        toast("success", `下载完成：${media?.title || url.trim()}`);
         notifyDownload("Y2B 下载完成", media?.title || url.trim());
       }
       onSettingsChange();
     } catch (e) {
       const msg = String(e);
       setMsg(msg);
-      pushLog(`ERROR: ${msg}`);
+      toast("error", msg);
+      // 后端报错自带“下载失败：”前缀时不再叠 ERROR，避免 “ERROR: 下载失败：…” 双重前缀
+      pushLog(msg.startsWith("下载失败：") ? msg : `ERROR: ${msg}`);
       if (!msg.includes("已取消")) notifyDownload("Y2B 下载失败", (media?.title || url.trim()).slice(0, 100));
     } finally {
       unlisten();

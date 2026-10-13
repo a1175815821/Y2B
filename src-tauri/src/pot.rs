@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
-use crate::ytdlp::hide_tokio;
+use crate::ytdlp::{hide_std, hide_tokio};
 
 /// 与 provider release 配对的 server 版本（README 要求 plugin 与 server 同版）
 pub const POT_PROVIDER_TAG: &str = "2.0.1";
@@ -203,14 +203,82 @@ pub async fn start_server(app: AppHandle) -> Result<String, String> {
     Ok("PO 服务启动中（/ping 暂未响应，下载时会自动走脚本兜底，可稍后重试）".into())
 }
 
-/// 停止我们拉起的服务（用户自建的不碰）
+/// 按端口找 LISTENING 进程并杀掉（Windows 用 netstat + taskkill）。
+/// 只杀监听 4416 的，返回成功杀掉的 pid 列表。
+#[cfg(windows)]
+fn kill_listeners_on_port(port: u16) -> Vec<u32> {
+    use std::collections::HashSet;
+    let suffix = format!(":{port}");
+    let mut pids: HashSet<u32> = HashSet::new();
+    let mut cmd = std::process::Command::new("netstat");
+    hide_std(&mut cmd);
+    cmd.args(["-ano", "-p", "TCP"]);
+    if let Ok(out) = cmd.output() {
+        if out.status.success() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // "TCP  127.0.0.1:4416  0.0.0.0:0  LISTENING  12345"
+                if parts.len() >= 5
+                    // netstat -p TCP 的 IPv6 行 Proto 是 "TCPv6"，只认 "TCP" 会漏掉它
+                    && (parts[0].eq_ignore_ascii_case("TCP")
+                        || parts[0].eq_ignore_ascii_case("TCPv6"))
+                    && parts[3].eq_ignore_ascii_case("LISTENING")
+                    && parts[1].ends_with(suffix.as_str())
+                {
+                    if let Ok(pid) = parts[4].parse::<u32>() {
+                        if pid > 0 {
+                            pids.insert(pid);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut killed = Vec::new();
+    for pid in pids {
+        let mut kill = std::process::Command::new("taskkill");
+        hide_std(&mut kill);
+        kill.args(["/F", "/PID", &pid.to_string()]);
+        if kill.output().map(|o| o.status.success()).unwrap_or(false) {
+            killed.push(pid);
+        }
+    }
+    killed
+}
+
+#[cfg(not(windows))]
+fn kill_listeners_on_port(_port: u16) -> Vec<u32> {
+    Vec::new()
+}
+
+/// 停止 PO 服务：先杀自己拉起的子进程，再按端口兜底
+/// （复用来的服务 / 上个进程残留 / 用户手动起的，slot 里根本没有 handle，
+/// 只杀 slot 就是“点了停止但关不掉”）。最后验活：端口还通就报错，不谎报成功。
 pub async fn stop_server() -> Result<String, String> {
-    let mut g = child_slot().lock().await;
-    if let Some(mut c) = g.take() {
-        let _ = c.kill().await;
+    let had_owned = {
+        let mut g = child_slot().lock().await;
+        match g.take() {
+            Some(mut c) => {
+                let _ = c.kill().await;
+                true
+            }
+            None => false,
+        }
+    };
+    let killed = kill_listeners_on_port(POT_PORT);
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    if refresh_ready_flag().await {
+        return Err(format!(
+            "127.0.0.1:{POT_PORT} 仍被占用，停止失败（已尝试结束 {} 个进程）。请手动结束占用进程后重试",
+            killed.len()
+        ));
     }
     HTTP_READY.store(false, Ordering::SeqCst);
-    Ok("已停止 Y2B 拉起的 PO 服务".into())
+    Ok(if had_owned || !killed.is_empty() {
+        format!("已停止 PO 服务（回收 {} 个进程），下载回退默认客户端", killed.len() + usize::from(had_owned))
+    } else {
+        "PO 服务本来就没在跑".into()
+    })
 }
 
 async fn download_to(url: &str, dest: &PathBuf, proxy: Option<&str>) -> Result<(), String> {
@@ -320,6 +388,117 @@ pub async fn stack_status(app: &AppHandle) -> PotStackStatus {
             .unwrap_or_else(|| "auto".into()),
         extractor_args_preview: crate::ytdlp::youtube_extractor_args(app, &settings),
         plugin_dir: crate::ytdlp::default_plugin_dir(app).to_string_lossy().to_string(),
+    }
+}
+
+/// node 版本探针（portable node 是否真能跑，canvas 坏了这里不体现，只看进程能起）
+async fn probe_node_version(app: &AppHandle) -> Option<String> {
+    let node = node_exe(app);
+    if !node.is_file() {
+        return None;
+    }
+    let mut cmd = tokio::process::Command::new(&node);
+    hide_tokio(&mut cmd);
+    cmd.arg("--version");
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// 脚本版本探针：generate_once.js --version 必须跑通且版本与 provider 对齐。
+/// node 起不来 / 依赖坏了（如 canvas 原生绑定 ABI 不对）/ 包版本错位都会在这里现形，
+/// 而不是等到下载时报一句糊涂的 PO 失败。返回 (版本, 失败原因)。
+async fn probe_script_version(app: &AppHandle) -> (Option<String>, Option<String>) {
+    let node = node_exe(app);
+    let gen = server_home(app).join("build").join("generate_once.js");
+    if !node.is_file() {
+        return (None, Some("缺少 portable node".into()));
+    }
+    if !gen.is_file() {
+        return (None, Some("缺少 build/generate_once.js（服务包不完整）".into()));
+    }
+    let mut cmd = tokio::process::Command::new(&node);
+    hide_tokio(&mut cmd);
+    cmd.arg(&gen).arg("--version");
+    let out = match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return (None, Some(format!("启动失败：{e}"))),
+        Err(_) => return (None, Some("30秒无响应（node/依赖可能卡死）".into())),
+    };
+    if !out.status.success() {
+        let tail = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("进程异常退出")
+            .trim()
+            .chars()
+            .take(200)
+            .collect::<String>();
+        return (None, Some(format!("自检失败：{tail}")));
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if v.is_empty() {
+        return (None, Some("无版本输出".into()));
+    }
+    if !v.contains(POT_PROVIDER_TAG) {
+        return (
+            Some(v.clone()),
+            Some(format!("脚本版本 {v} 与插件 {POT_PROVIDER_TAG} 错位，Token 可能刷不出")),
+        );
+    }
+    (Some(v), None)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PotDiagnose {
+    pub provider_zip: bool,
+    pub plugin_files: Vec<String>,
+    pub node_version: Option<String>,
+    pub script_version: Option<String>,
+    pub script_error: Option<String>,
+    pub server_running: bool,
+    pub server_version: Option<String>,
+    pub effective_client: String,
+    pub extractor_args_preview: Vec<String>,
+}
+
+/// PO 一键诊断：文件 / node / 脚本自检 / 服务，一次说清断在哪。
+/// 排障时把这份结果贴出来，比“下载失败”四个字管用。
+#[tauri::command]
+pub async fn pot_diagnose(app: AppHandle) -> PotDiagnose {
+    let settings = crate::settings::get_settings(app.clone()).unwrap_or_default();
+    let dir = crate::ytdlp::default_plugin_dir(&app);
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Some(n) = e.file_name().to_str().map(|s| s.to_string()) {
+                files.push(n);
+            }
+        }
+        files.sort();
+        files.truncate(20);
+    }
+    let running_ver = ping_ok().await;
+    HTTP_READY.store(running_ver.is_some(), Ordering::SeqCst);
+    let (script_version, script_error) = probe_script_version(&app).await;
+    PotDiagnose {
+        provider_zip: provider_zip_path(&app).is_file(),
+        plugin_files: files,
+        node_version: probe_node_version(&app).await,
+        script_version,
+        script_error,
+        server_running: running_ver.is_some(),
+        server_version: running_ver.filter(|v| !v.is_empty()),
+        effective_client: crate::ytdlp::effective_player_client(&app, &settings)
+            .unwrap_or_else(|| "auto".into()),
+        extractor_args_preview: crate::ytdlp::youtube_extractor_args(&app, &settings),
     }
 }
 

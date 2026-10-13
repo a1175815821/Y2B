@@ -20,10 +20,12 @@ yt-dlp 与 App 双更新检查。
 | 可选画质、音频 | `yt-dlp -J` 全格式列表（过滤 storyboard，按画质排序），点击行即锁定 Format ID |
 | Cookie 管理 | 命名配置，导入 Netscape `cookies.txt`，设默认 / 删除 / 校验 |
 | 18+ / 高清绕过 | 播放器客户端切换（mweb / web_creator …）+ PO-Token 插件目录 + 手动 Token，见下 |
+| PO 一键诊断 | 「设置 → YouTube 年龄限制 / PO 服务 → PO 诊断」一次查清插件 / node / 脚本自检 / 服务断在哪 |
 | 内置 yt-dlp | `resources/yt-dlp.exe` 随包打包；缺失时自动下载；设置页可一键更新 |
-| 内置 ffmpeg | 音画合并与 mp3/m4a 转码；缺失时一键下载 |
+| 内置 ffmpeg | 音画合并与 mp3/m4a 转码；缺失时一键下载；路径显式透传给 yt-dlp，不再靠“恰好同目录” |
 | 断点续传 | `--continue` + `--no-overwrites`，中断重跑自动续传 |
-| 中文报错 | 30+ 规则把 yt-dlp 英文报错翻译成一句话中文提示 |
+| 失败可判断 | ffmpeg 不可用时明确报「没合并、只剩 .fXXX 碎片」，不会退出码 0 谎报成功；历史里「跳过」与「成功」分开计 |
+| 中文报错 | 30+ 规则把 yt-dlp 英文报错翻译成一句话中文提示；按日志末端的真实死因定性 |
 
 ## 安装
 
@@ -78,17 +80,43 @@ npm run tauri build    # 打包（需安装 NSIS，产物在 src-tauri/target/re
 应用内「设置 → 检查应用更新」走 GitHub Releases 的 `latest.json`，
 签名公钥已写入 `src-tauri/tauri.conf.json`。
 
-发新版流程：
+### 一键发版（推荐）
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$env:USERPROFILE\.tauri\Y2B.key"
-npm run tauri build -- --bundles nsis
-# 产物：*.exe 安装包 + *.nsis.zip + *.nsis.zip.sig + latest.json
-# 四个文件一起传到新 Release，用户即可在线升级
+powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 0.2.3 -Notes "修复说明…"
 ```
+
+脚本依次完成：升版（`package.json` / `src-tauri/Cargo.toml` / `Cargo.lock` /
+`tauri.conf.json` / 两处前端兜底版本号 / README 徽章与安装包名）→ `tsc` 校验 →
+签名构建 → **构建成功后才** commit + tag + push → 生成 `latest.json` →
+`gh release create`。构建失败就不会把「版本号已改但没发版」的脏提交推到远端。
+
+前置：`git` / `npm` / `gh`（已登录）/ NSIS（`C:\Program Files (x86)\NSIS`）/
+签名私钥 `%USERPROFILE%\.tauri\Y2B.key`，且工作区干净。
+
+产物在 `src-tauri/target/release/bundle/nsis/`，**三个文件**一起上传：
+
+- `Y2B_<版本>_x64-setup.exe`
+- `Y2B_<版本>_x64-setup.exe.sig`
+- `latest.json`（脚本按 updater schema 自生成，构建不产出）
+
+### 手工发版
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content "$env:USERPROFILE\.tauri\Y2B.key" -Raw)
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+npm run tauri build -- --bundles nsis
+```
+
+> 必须用内联私钥变量 `TAURI_SIGNING_PRIVATE_KEY`：只给 `_PATH` 时，
+> 打包器会报「no private key」，但 `signer sign` 单独跑却能过。
 
 私钥在 `%USERPROFILE%\.tauri\Y2B.key`，**丢了就签不了新版，务必备份**。
 公钥更换需同步改 `tauri.conf.json` 并重发版。
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 技术栈
 

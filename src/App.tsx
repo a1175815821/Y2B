@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { TAURI_COMMANDS, YtdlpStatus, FfmpegStatus, AppSettings } from "./types";
 import { IconDownload, IconCollection, IconKey, IconGear, IconRefresh, IconCheck } from "./components/icons";
+import { ToastProvider } from "./components/toasts";
 import SingleDownload from "./components/SingleDownload";
 import CreatorBatch from "./components/CreatorBatch";
 import CookieManager from "./components/CookieManager";
@@ -58,6 +59,7 @@ export default function App() {
   }, []);
 
   return (
+    <ToastProvider>
     <div className="app">
       {/* ============ 侧边导航 ============ */}
       <aside className="sidebar">
@@ -172,5 +174,6 @@ export default function App() {
         </footer>
       </div>
     </div>
+    </ToastProvider>
   );
 }

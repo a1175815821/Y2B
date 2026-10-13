@@ -58,6 +58,10 @@ export default function HistoryPanel({ active }: { active: boolean }) {
   };
 
   const okCount = items.filter((i) => i.status === "ok").length;
+  const skippedCount = items.filter((i) => i.status === "skipped").length;
+
+  const statusText = (s: string) =>
+    s === "ok" ? "成功" : s === "skipped" ? "跳过" : "失败";
 
   return (
     <div>
@@ -73,6 +77,7 @@ export default function HistoryPanel({ active }: { active: boolean }) {
               历史记录{" "}
               <span className="pill info" style={{ marginLeft: 6 }}>
                 {okCount} 成功 / {items.length} 共
+                {skippedCount > 0 ? `（${skippedCount} 跳过）` : ""}
               </span>
             </h3>
             <p>只删记录不删文件，最多保留 200 条</p>
@@ -114,8 +119,12 @@ export default function HistoryPanel({ active }: { active: boolean }) {
                     </div>
                   )}
                 </div>
-                <span className={`pill ${h.status === "ok" ? "ok" : "warn"}`}>
-                  {h.status === "ok" ? "成功" : "失败"}
+                <span
+                  className={`pill ${
+                    h.status === "ok" ? "ok" : h.status === "skipped" ? "info" : "warn"
+                  }`}
+                >
+                  {statusText(h.status)}
                 </span>
                 <button
                   className="btn btn-ghost btn-sm"
