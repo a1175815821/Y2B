@@ -105,10 +105,15 @@ $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -LiteralPath $keyPath -Raw -Encodin
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
 
 try {
-  # drop stale updater files so we never upload a previous version manifest
-  $bundleDir = Join-Path $RepoRoot 'src-tauri\target\release\bundle'
-  Get-ChildItem -LiteralPath $bundleDir -Recurse -File -Include 'latest.json' -ErrorAction SilentlyContinue |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+  # 清理旧清单只是保险（下面本来就会覆盖写 latest.json），失败绝不能中断发版。
+  # 用 ForEach-Object + -LiteralPath 逐个删：管道直连 Remove-Item 在部分
+  # 环境（带删除钩子的宿主）会报 "missing path operand" 并抛终止性错误。
+  try {
+    Get-ChildItem -LiteralPath $bundleDir -Recurse -File -Include 'latest.json' -ErrorAction SilentlyContinue |
+      ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+  } catch {
+    Write-Host ('skip stale manifest cleanup: ' + $_.Exception.Message) -ForegroundColor Yellow
+  }
 
   npm run tauri build -- --bundles nsis
   if ($LASTEXITCODE -ne 0) { Fail 'tauri build failed' }
